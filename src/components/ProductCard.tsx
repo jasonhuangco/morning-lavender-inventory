@@ -99,20 +99,20 @@ const ProductCard: React.FC<ProductCardProps> = ({
   return (
     <Card 
       sx={{ 
-        mb: 2,
+        mb: 1.5, // Reduced from 2
         border: isLowStock ? '2px solid #f44336' : '1px solid #e0e0e0',
         backgroundColor: isLowStock ? '#ffebee' : 'white',
       }}
     >
-      <CardContent>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
+      <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}> {/* Reduced padding */}
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}> {/* Reduced mb from 2 to 1 */}
           <Box sx={{ flex: 1 }}>
-            <Typography variant="h6" component="h3" gutterBottom>
+            <Typography variant="h6" component="h3" gutterBottom sx={{ mb: 0.5 }}> {/* Reduced margin bottom */}
               {product.name}
             </Typography>
             
             {/* Categories */}
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
               {getProductCategories().map((category) => (
                 <Chip
                   key={category?.id}
@@ -124,12 +124,12 @@ const ProductCard: React.FC<ProductCardProps> = ({
             </Box>
 
             {/* Suppliers */}
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
               Suppliers: {getProductSuppliers().map(s => s?.name).join(', ')}
             </Typography>
 
             {product.requiresQuantity && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
                 Min Threshold: {minThreshold}
               </Typography>
             )}
@@ -138,70 +138,74 @@ const ProductCard: React.FC<ProductCardProps> = ({
             {lastOrderInfo && (
               <Box sx={{ 
                 backgroundColor: '#f5f5f5', 
-                padding: 1, 
+                padding: 0.5, // Reduced from 1
                 borderRadius: 1, 
-                mb: 1,
+                mb: 0, // Reduced from 1
                 border: '1px solid #e0e0e0'
               }}>
-                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold' }}>
+                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold', fontSize: '0.75rem' }}> {/* Smaller font */}
                   Last Order:
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}> {/* Smaller font */}
                   {formatLastOrderDate(lastOrderInfo.date)}
                   {lastOrderInfo.quantity && ` • Qty: ${lastOrderInfo.quantity}`}
                 </Typography>
               </Box>
             )}
           </Box>
-        </Box>
 
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          {product.requiresQuantity ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <IconButton 
-                onClick={() => handleQuantityChange(quantity - 1)}
-                disabled={quantity <= 0}
-                size="small"
-              >
-                <RemoveIcon />
-              </IconButton>
-              
-              <TextField
-                value={quantity}
-                onChange={(e) => {
-                  const value = parseInt(e.target.value) || 0;
-                  handleQuantityChange(value);
-                }}
-                inputProps={{
-                  min: 0,
-                  style: { textAlign: 'center' },
-                }}
-                sx={{ width: 80 }}
-                size="small"
-              />
-              
-              <IconButton 
-                onClick={() => handleQuantityChange(quantity + 1)}
-                size="small"
-              >
-                <AddIcon />
-              </IconButton>
-            </Box>
-          ) : (
-            <Box sx={{ flex: 1 }} />
-          )}
+          {/* Right side controls */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5, ml: 2 }}> {/* Reduced gap from 1 to 0.5 */}
+            {/* Quantity controls */}
+            {product.requiresQuantity && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}> {/* Reduced gap from 1 to 0.5 */}
+                <IconButton 
+                  onClick={() => handleQuantityChange(quantity - 1)}
+                  disabled={quantity <= 0}
+                  size="small"
+                  sx={{ p: 0.5 }} // Reduced padding
+                >
+                  <RemoveIcon fontSize="small" />
+                </IconButton>
+                
+                <TextField
+                  value={quantity}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value) || 0;
+                    handleQuantityChange(value);
+                  }}
+                  inputProps={{
+                    min: 0,
+                    style: { textAlign: 'center' },
+                  }}
+                  sx={{ width: 70 }} // Reduced from 80
+                  size="small"
+                />
+                
+                <IconButton 
+                  onClick={() => handleQuantityChange(quantity + 1)}
+                  size="small"
+                  sx={{ p: 0.5 }} // Reduced padding
+                >
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </Box>
+            )}
 
-          <FormControlLabel
-            control={
-              <Checkbox
-                checked={shouldOrder}
-                onChange={(e) => handleOrderChange(e.target.checked)}
-                color="primary"
-              />
-            }
-            label="Order"
-            sx={{ ml: 2 }}
-          />
+            {/* Order checkbox */}
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={shouldOrder}
+                  onChange={(e) => handleOrderChange(e.target.checked)}
+                  color="primary"
+                  size="small" // Made checkbox smaller
+                />
+              }
+              label={<Typography variant="body2">Order</Typography>} // Smaller label
+              sx={{ m: 0 }} // Removed default margins
+            />
+          </Box>
         </Box>
 
         {isLowStock && (
@@ -210,9 +214,10 @@ const ProductCard: React.FC<ProductCardProps> = ({
             color="error" 
             sx={{ 
               display: 'block', 
-              mt: 1, 
+              mt: 0.5, // Reduced from 1
               fontWeight: 'bold',
-              textAlign: 'center' 
+              textAlign: 'center',
+              fontSize: '0.7rem' // Smaller font
             }}
           >
             ⚠️ Below minimum threshold - auto-selected for ordering

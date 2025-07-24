@@ -21,6 +21,8 @@ import {
   AccordionSummary,
   AccordionDetails,
   Divider,
+  Switch,
+  FormControlLabel,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -36,7 +38,7 @@ import { Location, Category, Supplier, OrderSummary } from '../types';
 import { EmailService } from '../services/emailService';
 
 const SettingsScreen: React.FC = () => {
-  const { state, dispatch, syncWithGoogleSheets, syncWithSupabase } = useAppContext();
+  const { state, dispatch, syncWithGoogleSheets, syncWithSupabase, autoSyncEnabled, setAutoSyncEnabled } = useAppContext();
   const [showLocationDialog, setShowLocationDialog] = useState(false);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showSupplierDialog, setShowSupplierDialog] = useState(false);
@@ -554,6 +556,32 @@ const SettingsScreen: React.FC = () => {
               <Typography variant="body2" color="text.secondary" gutterBottom>
                 Sync data with Supabase cloud database
               </Typography>
+              
+              {/* Auto-sync toggle */}
+              <Card variant="outlined" sx={{ mb: 2, bgcolor: 'rgba(33, 150, 243, 0.04)' }}>
+                <CardContent sx={{ py: 1.5 }}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={autoSyncEnabled}
+                        onChange={(e) => setAutoSyncEnabled(e.target.checked)}
+                        color="primary"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">
+                          Auto-sync enabled
+                        </Typography>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                          Automatically sync with Supabase on app startup, every 5 minutes, and when app regains focus
+                        </Typography>
+                      </Box>
+                    }
+                  />
+                </CardContent>
+              </Card>
+              
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <TextField
                   label="Supabase URL"

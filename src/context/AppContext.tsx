@@ -11,6 +11,7 @@ interface AppContextType {
   syncWithSupabase: () => Promise<void>;
   autoSyncEnabled: boolean;
   setAutoSyncEnabled: (enabled: boolean) => void;
+  isInitialized: boolean;
 }
 
 type AppAction =
@@ -58,7 +59,23 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
     case 'SET_PRODUCTS':
       return { ...state, products: action.payload };
     case 'SET_SESSIONS':
-      return { ...state, sessions: action.payload };
+      // Preserve current session if it's not in the new sessions list (e.g., during sync)
+      let preservedCurrentSession = state.currentSession;
+      if (state.currentSession && !action.payload.find(s => s.id === state.currentSession!.id)) {
+        // Current session is not in the new list, keep it as is
+        console.log('Preserving current session during SET_SESSIONS');
+      } else if (state.currentSession) {
+        // Update current session with synced version if it exists
+        const updatedCurrentSession = action.payload.find(s => s.id === state.currentSession!.id);
+        if (updatedCurrentSession) {
+          preservedCurrentSession = updatedCurrentSession;
+        }
+      }
+      return { 
+        ...state, 
+        sessions: action.payload,
+        currentSession: preservedCurrentSession
+      };
     case 'SET_ORDER_HISTORY':
       return { ...state, orderHistory: action.payload };
     case 'SET_CURRENT_SESSION':
@@ -139,6 +156,19 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
       };
     
     case 'DELETE_SESSION':
+      // Track deleted session ID with timestamp to prevent it from coming back during sync
+      const deletedSessions = JSON.parse(localStorage.getItem('deleted-sessions') || '[]');
+      const deletedSessionsWithTimestamp = JSON.parse(localStorage.getItem('deleted-sessions-with-timestamp') || '[]');
+      
+      deletedSessions.push(action.payload);
+      deletedSessionsWithTimestamp.push({
+        sessionId: action.payload,
+        timestamp: Date.now()
+      });
+      
+      localStorage.setItem('deleted-sessions', JSON.stringify(deletedSessions));
+      localStorage.setItem('deleted-sessions-with-timestamp', JSON.stringify(deletedSessionsWithTimestamp));
+      
       return {
         ...state,
         sessions: state.sessions.filter((session: InventorySession) => session.id !== action.payload),
@@ -155,7 +185,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [isLoading, setIsLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(false);
+  const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(true); // Enable by default
+  const [isInitialized, setIsInitialized] = React.useState(false);
 
   // Function to get last order info for a product at a location within 12 months
   const getLastOrderInfo = (productId: string, locationId: string): { date: string; quantity?: number } | null => {
@@ -309,20 +340,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       
       console.log('Data received from Supabase:', data);
 
+      // Filter out sessions that were locally deleted
+      const deletedSessions = JSON.parse(localStorage.getItem('deleted-sessions') || '[]');
+      const filteredSessions = data.sessions.filter(session => !deletedSessions.includes(session.id));
+      const filteredOrderHistory = data.orderHistory.filter(item => !deletedSessions.includes(item.sessionId));
+      
+      if (filteredSessions.length !== data.sessions.length) {
+        console.log(`Filtered out ${data.sessions.length - filteredSessions.length} locally deleted sessions`);
+      }
+
       dispatch({ type: 'SET_LOCATIONS', payload: data.locations });
       dispatch({ type: 'SET_CATEGORIES', payload: data.categories });
       dispatch({ type: 'SET_SUPPLIERS', payload: data.suppliers });
       dispatch({ type: 'SET_PRODUCTS', payload: data.products });
-      dispatch({ type: 'SET_SESSIONS', payload: data.sessions });
-      dispatch({ type: 'SET_ORDER_HISTORY', payload: data.orderHistory });
+      dispatch({ type: 'SET_SESSIONS', payload: filteredSessions });
+      dispatch({ type: 'SET_ORDER_HISTORY', payload: filteredOrderHistory });
+
+      // Preserve current session if it exists and isn't in the synced sessions
+      if (state.currentSession && !filteredSessions.find(s => s.id === state.currentSession!.id)) {
+        console.log('Preserving current session that was not in sync data');
+        // Don't dispatch SET_CURRENT_SESSION here, just leave it as is
+        // The current session is still valid and should remain active
+      }
 
       // Also save to localStorage as backup
       localStorage.setItem('cafe-inventory-locations', JSON.stringify(data.locations));
       localStorage.setItem('cafe-inventory-categories', JSON.stringify(data.categories));
       localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(data.suppliers));
       localStorage.setItem('cafe-inventory-products', JSON.stringify(data.products));
-      localStorage.setItem('cafe-inventory-sessions', JSON.stringify(data.sessions));
-      localStorage.setItem('cafe-inventory-order-history', JSON.stringify(data.orderHistory));
+      localStorage.setItem('cafe-inventory-sessions', JSON.stringify(filteredSessions));
+      localStorage.setItem('cafe-inventory-order-history', JSON.stringify(filteredOrderHistory));
+      
+      // Clean up old deleted session tracking (older than 30 days)
+      // This prevents the deleted-sessions list from growing indefinitely
+      const cleanupThreshold = Date.now() - (30 * 24 * 60 * 60 * 1000); // 30 days ago
+      const deletedSessionsWithTimestamp = JSON.parse(localStorage.getItem('deleted-sessions-with-timestamp') || '[]');
+      const validDeletedSessions = deletedSessionsWithTimestamp.filter((entry: any) => entry.timestamp > cleanupThreshold);
+      
+      // Update the simple deleted-sessions list with only recent deletions
+      const recentDeletedSessions = validDeletedSessions.map((entry: any) => entry.sessionId);
+      localStorage.setItem('deleted-sessions', JSON.stringify(recentDeletedSessions));
+      localStorage.setItem('deleted-sessions-with-timestamp', JSON.stringify(validDeletedSessions));
       
       console.log('Supabase sync completed successfully!');
 
@@ -331,6 +389,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setError(error instanceof Error ? error.message : 'Failed to sync with Supabase');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Auto-sync function with fallback to localStorage
+  const autoSyncWithSupabase = async () => {
+    try {
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+
+      if (!savedSupabaseUrl || !savedSupabaseKey) {
+        console.log('Supabase not configured, skipping auto-sync');
+        return false;
+      }
+
+      // Don't auto-sync if there's an active session to avoid disrupting user workflow
+      if (state.currentSession && !state.currentSession.isSubmitted) {
+        console.log('Skipping auto-sync: active session in progress');
+        return false;
+      }
+
+      console.log('Starting automatic Supabase sync...');
+      await syncWithSupabase();
+      console.log('Automatic Supabase sync completed successfully');
+      return true;
+    } catch (error) {
+      console.warn('Auto-sync with Supabase failed, falling back to localStorage:', error);
+      // Don't set error state for auto-sync failures, just log them
+      return false;
     }
   };
 
@@ -344,12 +430,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncWithSupabase,
     autoSyncEnabled,
     setAutoSyncEnabled,
+    isInitialized,
   };
 
-  // Load initial data from localStorage
+  // Load initial data from localStorage and auto-sync with Supabase
   useEffect(() => {
-    const loadInitialData = () => {
+    const loadInitialData = async () => {
       try {
+        setIsLoading(true);
+        
+        // First, load from localStorage for immediate display
         const storedLocations = localStorage.getItem('cafe-inventory-locations');
         const storedCategories = localStorage.getItem('cafe-inventory-categories');
         const storedSuppliers = localStorage.getItem('cafe-inventory-suppliers');
@@ -471,14 +561,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           dispatch({ type: 'SET_ORDER_HISTORY', payload: sampleOrderHistory });
           localStorage.setItem('cafe-inventory-order-history', JSON.stringify(sampleOrderHistory));
         }
+
+        setIsInitialized(true);
+        
+        // After loading localStorage data, try to sync with Supabase
+        if (autoSyncEnabled) {
+          console.log('Attempting auto-sync with Supabase on startup...');
+          const syncSuccess = await autoSyncWithSupabase();
+          if (syncSuccess) {
+            console.log('Initial Supabase sync completed');
+          } else {
+            console.log('Using localStorage data (Supabase sync skipped)');
+          }
+        }
+        
       } catch (error) {
         console.error('Error loading initial data:', error);
         setError('Failed to load initial data');
+      } finally {
+        setIsLoading(false);
       }
     };
 
     loadInitialData();
-  }, []);
+  }, [autoSyncEnabled]);
+
+  // Set up periodic auto-sync (every 15 minutes when enabled and no active session)
+  useEffect(() => {
+    if (!autoSyncEnabled || !isInitialized) return;
+
+    const interval = setInterval(async () => {
+      // Only sync if there's no active session
+      if (!state.currentSession || state.currentSession.isSubmitted) {
+        console.log('Running periodic Supabase sync...');
+        await autoSyncWithSupabase();
+      } else {
+        console.log('Skipping periodic sync: active session in progress');
+      }
+    }, 15 * 60 * 1000); // 15 minutes instead of 5
+
+    return () => clearInterval(interval);
+  }, [autoSyncEnabled, isInitialized, state.currentSession]);
+
+  // Sync when window regains focus (but not if there's an active session)
+  useEffect(() => {
+    if (!autoSyncEnabled || !isInitialized) return;
+
+    const handleFocus = async () => {
+      // Only sync if there's no active session
+      if (!state.currentSession || state.currentSession.isSubmitted) {
+        console.log('Window regained focus, syncing with Supabase...');
+        await autoSyncWithSupabase();
+      } else {
+        console.log('Window regained focus, but skipping sync due to active session');
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [autoSyncEnabled, isInitialized, state.currentSession]);
 
   // Save data to localStorage when state changes
   useEffect(() => {

@@ -21,6 +21,8 @@ import {
   Divider,
   Stack,
   Checkbox,
+  CircularProgress,
+  Tooltip,
 } from '@mui/material';
 import {
   Visibility as VisibilityIcon,
@@ -31,12 +33,16 @@ import {
   LocationOn as LocationIcon,
   Assignment as AssignmentIcon,
   Delete as DeleteIcon,
+  Edit as EditIcon,
+  Send as SendIcon,
 } from '@mui/icons-material';
 import { useAppContext } from '../context/AppContext';
-import { InventorySession, InventoryItem } from '../types';
+import { InventorySession, InventoryItem, OrderSummary, OrderHistoryItem } from '../types';
 import dayjs from 'dayjs';
+import { EmailService } from '../services/emailService';
+import { SupabaseService } from '../services/supabase';
 
-const HistoryScreen: React.FC = () => {
+const HistoryScreen: React.FC<{ onNavigateToInventory?: () => void }> = ({ onNavigateToInventory }) => {
   const { state, dispatch } = useAppContext();
   const { sessions, locations, categories, suppliers, products } = state;
 
@@ -62,6 +68,12 @@ const HistoryScreen: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<InventorySession | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Draft operations state
+  const [isLoadingDraft, setIsLoadingDraft] = useState(false);
+  const [isSubmittingDraft, setIsSubmittingDraft] = useState(false);
+  const [submitDraftDialogOpen, setSubmitDraftDialogOpen] = useState(false);
+  const [draftToSubmit, setDraftToSubmit] = useState<InventorySession | null>(null);
 
   // Get unique users from sessions
   const uniqueUsers = useMemo(() => {
@@ -182,10 +194,11 @@ const HistoryScreen: React.FC = () => {
       setIsDeleting(true);
       try {
         // Get Supabase credentials from localStorage
-        const savedSupabaseUrl = localStorage.getItem('supabase_url');
-        const savedSupabaseKey = localStorage.getItem('supabase_key');
+        const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+        const savedSupabaseKey = localStorage.getItem('supabaseKey');
         
         if (savedSupabaseUrl && savedSupabaseKey) {
+          console.log('Deleting session from Supabase:', sessionToDelete.id);
           // Delete from Supabase
           const { SupabaseService } = await import('../services/supabase');
           const supabaseService = new SupabaseService();
@@ -194,7 +207,12 @@ const HistoryScreen: React.FC = () => {
           const success = await supabaseService.deleteSession(sessionToDelete.id);
           if (!success) {
             console.error('Failed to delete session from Supabase');
+            alert('Failed to delete session from database. The session may reappear after sync.');
+          } else {
+            console.log('Session successfully deleted from Supabase');
           }
+        } else {
+          console.log('Supabase not configured, skipping database deletion');
         }
         
         // Delete from local state
@@ -203,6 +221,7 @@ const HistoryScreen: React.FC = () => {
         setSessionToDelete(null);
       } catch (error) {
         console.error('Error deleting session:', error);
+        alert('Error deleting session. It may reappear after sync.');
       } finally {
         setIsDeleting(false);
       }
@@ -212,6 +231,151 @@ const HistoryScreen: React.FC = () => {
   const handleCancelDelete = () => {
     setDeleteDialogOpen(false);
     setSessionToDelete(null);
+  };
+
+  const handleLoadDraft = async (session: InventorySession) => {
+    if (session.isSubmitted) return;
+    
+    setIsLoadingDraft(true);
+    try {
+      // Set the draft session as the current session
+      dispatch({ type: 'SET_CURRENT_SESSION', payload: session });
+      
+      // Navigate to inventory screen if callback provided
+      if (onNavigateToInventory) {
+        onNavigateToInventory();
+      }
+    } catch (error) {
+      console.error('Error loading draft session:', error);
+    } finally {
+      setIsLoadingDraft(false);
+    }
+  };
+
+  const handleSubmitDraftDialog = (session: InventorySession) => {
+    if (session.isSubmitted) return;
+    setDraftToSubmit(session);
+    setSubmitDraftDialogOpen(true);
+  };
+
+  const handleSubmitDraft = async () => {
+    if (!draftToSubmit) return;
+
+    setIsSubmittingDraft(true);
+    try {
+      const itemsToOrder = draftToSubmit.items.filter(item => item.shouldOrder);
+      
+      if (itemsToOrder.length === 0) {
+        throw new Error('No items selected for ordering');
+      }
+
+      const currentLocation = locations.find(loc => loc.id === draftToSubmit.locationId);
+      if (!currentLocation) {
+        throw new Error('Location not found');
+      }
+
+      // Get email configuration from localStorage
+      const emailConfig = localStorage.getItem('email-config');
+      if (!emailConfig) {
+        throw new Error('Email configuration not found. Please configure email settings first.');
+      }
+
+      const { serviceId, templateId, publicKey } = JSON.parse(emailConfig);
+
+      // Format date for display
+      const formatDate = (date: Date) => {
+        return date.toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      };
+
+      // Create order summary with properly formatted date
+      const orderDate = new Date();
+      const orderDateString = orderDate.toISOString();
+      
+      const orderSummary: OrderSummary = {
+        sessionId: draftToSubmit.id,
+        locationName: currentLocation.name,
+        userName: draftToSubmit.userName,
+        orderDate: formatDate(orderDate), // Use formatted date for email
+        items: itemsToOrder.map(item => {
+          const product = products.find(p => p.id === item.productId);
+          const itemSuppliers = suppliers.filter(s => 
+            product?.suppliers.includes(s.id)
+          ).map(s => s.name);
+          
+          return {
+            productName: product?.name || 'Unknown Product',
+            quantity: item.currentQuantity,
+            suppliers: itemSuppliers.length > 0 ? itemSuppliers : ['Unknown Supplier'],
+          };
+        }),
+      };
+
+      const emailService = new EmailService(serviceId, templateId, publicKey);
+      const emailSent = await emailService.sendOrderEmail(orderSummary);
+      
+      if (!emailSent) {
+        throw new Error('Failed to send email');
+      }
+
+      // Create order history items
+      const orderHistoryItems: OrderHistoryItem[] = itemsToOrder.map(item => {
+        const product = products.find(p => p.id === item.productId);
+        const itemSuppliers = suppliers.filter(s => 
+          product?.suppliers.includes(s.id)
+        ).map(s => s.name);
+        
+        return {
+          productId: item.productId,
+          locationId: item.locationId,
+          orderDate: orderDateString, // Use ISO string for storage
+          quantityOrdered: item.currentQuantity,
+          sessionId: draftToSubmit.id,
+          suppliers: itemSuppliers.length > 0 ? itemSuppliers : ['Unknown Supplier'],
+          categoryIds: product?.categories || [],
+        };
+      });
+
+      // Add to order history
+      dispatch({ type: 'ADD_ORDER_HISTORY_ITEMS', payload: orderHistoryItems });
+
+      // Mark session as submitted with ISO string for storage
+      const submittedSession = {
+        ...draftToSubmit,
+        endDate: orderDateString,
+        isSubmitted: true,
+      };
+
+      dispatch({ type: 'UPDATE_SESSION', payload: submittedSession });
+
+      // Sync with Supabase
+      try {
+        const supabaseService = new SupabaseService();
+        await supabaseService.updateSession(submittedSession);
+      } catch (syncError) {
+        console.warn('Failed to sync with Supabase:', syncError);
+      }
+
+      setSubmitDraftDialogOpen(false);
+      setDraftToSubmit(null);
+      
+    } catch (error) {
+      console.error('Error submitting draft order:', error);
+      alert(`Failed to submit order: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsSubmittingDraft(false);
+    }
+  };
+
+  const handleCancelSubmitDraft = () => {
+    setSubmitDraftDialogOpen(false);
+    setDraftToSubmit(null);
   };
 
   const clearAllFilters = () => {
@@ -410,7 +574,14 @@ const HistoryScreen: React.FC = () => {
             const summary = getSessionSummary(session);
             
             return (
-              <Card key={session.id} sx={{ '&:hover': { boxShadow: 2 } }}>
+              <Card 
+                key={session.id} 
+                sx={{ 
+                  '&:hover': { boxShadow: 2 },
+                  border: !session.isSubmitted ? '2px dashed #ff9800' : '1px solid #e0e0e0',
+                  backgroundColor: !session.isSubmitted ? '#fff3e0' : 'white',
+                }}
+              >
                 <CardContent>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                     <Box sx={{ flex: 1 }}>
@@ -439,8 +610,10 @@ const HistoryScreen: React.FC = () => {
                           size="small" 
                           color={summary.totalItems > 0 ? "primary" : "default"}
                         />
-                        {session.isSubmitted && (
-                          <Chip label="Submitted" size="small" color="success" />
+                        {session.isSubmitted ? (
+                          <Chip label="✓ Submitted" size="small" color="success" />
+                        ) : (
+                          <Chip label="📝 Draft" size="small" color="warning" variant="outlined" />
                         )}
                         {summary.supplierCount > 0 && (
                           <Chip 
@@ -452,20 +625,55 @@ const HistoryScreen: React.FC = () => {
                       </Stack>
                     </Box>
 
-                    <IconButton
-                      onClick={() => handleViewDetails(session)}
-                      color="primary"
-                      sx={{ ml: 1 }}
-                    >
-                      <VisibilityIcon />
-                    </IconButton>
-                    <IconButton
-                      onClick={() => handleDeleteSession(session)}
-                      color="error"
-                      sx={{ ml: 0.5 }}
-                    >
-                      <DeleteIcon />
-                    </IconButton>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                      <Tooltip title="View Details">
+                        <IconButton
+                          onClick={() => handleViewDetails(session)}
+                          color="primary"
+                          size="small"
+                        >
+                          <VisibilityIcon />
+                        </IconButton>
+                      </Tooltip>
+                      
+                      {!session.isSubmitted && (
+                        <>
+                          <Tooltip title="Load Draft Session">
+                            <IconButton
+                              onClick={() => handleLoadDraft(session)}
+                              color="success"
+                              size="small"
+                              disabled={isLoadingDraft}
+                            >
+                              {isLoadingDraft ? <CircularProgress size={20} /> : <EditIcon />}
+                            </IconButton>
+                          </Tooltip>
+                          
+                          <Tooltip title={session.items.filter(item => item.shouldOrder).length === 0 ? "No items to order" : "Submit as Order"}>
+                            <span>
+                              <IconButton
+                                onClick={() => handleSubmitDraftDialog(session)}
+                                color="warning"
+                                size="small"
+                                disabled={isSubmittingDraft || session.items.filter(item => item.shouldOrder).length === 0}
+                              >
+                                {isSubmittingDraft ? <CircularProgress size={20} /> : <SendIcon />}
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </>
+                      )}
+                      
+                      <Tooltip title="Delete Session">
+                        <IconButton
+                          onClick={() => handleDeleteSession(session)}
+                          color="error"
+                          size="small"
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </Tooltip>
+                    </Box>
                   </Box>
                 </CardContent>
               </Card>
@@ -772,6 +980,49 @@ const HistoryScreen: React.FC = () => {
             disabled={isDeleting}
           >
             {isDeleting ? 'Deleting...' : 'Delete Session'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Submit Draft Confirmation Dialog */}
+      <Dialog open={submitDraftDialogOpen} onClose={handleCancelSubmitDraft}>
+        <DialogTitle>Submit Draft as Order</DialogTitle>
+        <DialogContent>
+          {draftToSubmit && (
+            <Box>
+              <Typography variant="body1" sx={{ mb: 2 }}>
+                Are you sure you want to submit this draft session as an order? 
+                This will send an email and mark the session as submitted.
+              </Typography>
+              <Card variant="outlined" sx={{ p: 2 }}>
+                <Typography variant="h6" gutterBottom>
+                  Draft Session Details
+                </Typography>
+                <Typography><strong>Location:</strong> {getLocationName(draftToSubmit.locationId)}</Typography>
+                <Typography><strong>User:</strong> {draftToSubmit.userName}</Typography>
+                <Typography><strong>Date:</strong> {dayjs(draftToSubmit.startDate).format('MMM D, YYYY h:mm A')}</Typography>
+                <Typography><strong>Items to Order:</strong> {draftToSubmit.items.filter(item => item.shouldOrder).length} products</Typography>
+                <Typography><strong>Total Items:</strong> {draftToSubmit.items.length} products</Typography>
+              </Card>
+              {draftToSubmit.items.filter(item => item.shouldOrder).length === 0 && (
+                <Typography color="error" sx={{ mt: 1 }}>
+                  ⚠️ No items are marked for ordering in this session.
+                </Typography>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCancelSubmitDraft} disabled={isSubmittingDraft}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSubmitDraft} 
+            variant="contained" 
+            color="primary"
+            disabled={isSubmittingDraft || !draftToSubmit || draftToSubmit.items.filter(item => item.shouldOrder).length === 0}
+          >
+            {isSubmittingDraft ? 'Submitting...' : 'Submit Order'}
           </Button>
         </DialogActions>
       </Dialog>
