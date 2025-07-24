@@ -1,0 +1,3 @@
+Deployment trigger file - created to force Vercel rebuild
+Timestamp: 2025-07-24 03:21:00
+Latest features: Delete session functionality with Supabase integration
