@@ -141,6 +141,7 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
     case 'DELETE_SESSION':
       return {
         ...state,
+        sessions: state.sessions.filter((session: InventorySession) => session.id !== action.payload),
         orderHistory: state.orderHistory.filter((item: OrderHistoryItem) => item.sessionId !== action.payload),
       };
     default:

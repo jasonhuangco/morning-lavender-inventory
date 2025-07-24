@@ -463,6 +463,24 @@ export class SupabaseService {
     return !error;
   }
 
+  async deleteSession(sessionId: string): Promise<boolean> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    // First delete related order history items
+    await this.supabase
+      .from('order_history')
+      .delete()
+      .eq('session_id', sessionId);
+
+    // Then delete the session
+    const { error } = await this.supabase
+      .from('sessions')
+      .delete()
+      .eq('id', sessionId);
+
+    return !error;
+  }
+
   // Order History
   async getOrderHistory(): Promise<OrderHistoryItem[]> {
     if (!this.supabase) throw new Error('Supabase not initialized');

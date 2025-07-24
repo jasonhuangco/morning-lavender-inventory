@@ -61,6 +61,7 @@ const HistoryScreen: React.FC = () => {
   // Delete confirmation dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<InventorySession | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Get unique users from sessions
   const uniqueUsers = useMemo(() => {
@@ -176,11 +177,35 @@ const HistoryScreen: React.FC = () => {
     setDeleteDialogOpen(true);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (sessionToDelete) {
-      dispatch({ type: 'DELETE_SESSION', payload: sessionToDelete.id });
-      setDeleteDialogOpen(false);
-      setSessionToDelete(null);
+      setIsDeleting(true);
+      try {
+        // Get Supabase credentials from localStorage
+        const savedSupabaseUrl = localStorage.getItem('supabase_url');
+        const savedSupabaseKey = localStorage.getItem('supabase_key');
+        
+        if (savedSupabaseUrl && savedSupabaseKey) {
+          // Delete from Supabase
+          const { SupabaseService } = await import('../services/supabase');
+          const supabaseService = new SupabaseService();
+          supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+          
+          const success = await supabaseService.deleteSession(sessionToDelete.id);
+          if (!success) {
+            console.error('Failed to delete session from Supabase');
+          }
+        }
+        
+        // Delete from local state
+        dispatch({ type: 'DELETE_SESSION', payload: sessionToDelete.id });
+        setDeleteDialogOpen(false);
+        setSessionToDelete(null);
+      } catch (error) {
+        console.error('Error deleting session:', error);
+      } finally {
+        setIsDeleting(false);
+      }
     }
   };
 
@@ -737,9 +762,16 @@ const HistoryScreen: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleCancelDelete}>Cancel</Button>
-          <Button onClick={handleConfirmDelete} variant="contained" color="error">
-            Delete Session
+          <Button onClick={handleCancelDelete} disabled={isDeleting}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleConfirmDelete} 
+            variant="contained" 
+            color="error"
+            disabled={isDeleting}
+          >
+            {isDeleting ? 'Deleting...' : 'Delete Session'}
           </Button>
         </DialogActions>
       </Dialog>
