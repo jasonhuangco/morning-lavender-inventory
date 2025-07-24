@@ -1,0 +1,520 @@
+import React, { createContext, useContext, useReducer, useEffect } from 'react';
+import { AppState, Location, Category, Supplier, Product, InventorySession, OrderHistoryItem } from '../types';
+
+interface AppContextType {
+  state: AppState;
+  dispatch: React.Dispatch<AppAction>;
+  isLoading: boolean;
+  error: string | null;
+  getLastOrderInfo: (productId: string, locationId: string) => { date: string; quantity?: number } | null;
+  syncWithGoogleSheets: () => Promise<void>;
+  syncWithSupabase: () => Promise<void>;
+  autoSyncEnabled: boolean;
+  setAutoSyncEnabled: (enabled: boolean) => void;
+}
+
+type AppAction =
+  | { type: 'SET_LOADING'; payload: boolean }
+  | { type: 'SET_ERROR'; payload: string | null }
+  | { type: 'SET_LOCATIONS'; payload: Location[] }
+  | { type: 'SET_CATEGORIES'; payload: Category[] }
+  | { type: 'SET_SUPPLIERS'; payload: Supplier[] }
+  | { type: 'SET_PRODUCTS'; payload: Product[] }
+  | { type: 'SET_SESSIONS'; payload: InventorySession[] }
+  | { type: 'SET_ORDER_HISTORY'; payload: OrderHistoryItem[] }
+  | { type: 'SET_CURRENT_SESSION'; payload: InventorySession | undefined }
+  | { type: 'ADD_LOCATION'; payload: Location }
+  | { type: 'ADD_CATEGORY'; payload: Category }
+  | { type: 'ADD_SUPPLIER'; payload: Supplier }
+  | { type: 'ADD_PRODUCT'; payload: Product }
+  | { type: 'UPDATE_SESSION'; payload: InventorySession }
+  | { type: 'ADD_ORDER_HISTORY_ITEMS'; payload: OrderHistoryItem[] }
+  | { type: 'UPDATE_LOCATION'; payload: Location }
+  | { type: 'UPDATE_CATEGORY'; payload: Category }
+  | { type: 'UPDATE_SUPPLIER'; payload: Supplier }
+  | { type: 'DELETE_LOCATION'; payload: string }
+  | { type: 'DELETE_CATEGORY'; payload: string }
+  | { type: 'DELETE_SUPPLIER'; payload: string }
+  | { type: 'DELETE_SESSION'; payload: string };
+
+const initialState: AppState = {
+  locations: [],
+  categories: [],
+  suppliers: [],
+  products: [],
+  sessions: [],
+  orderHistory: [],
+  currentSession: undefined,
+};
+
+const appReducer = (state: AppState, action: AppAction): AppState => {
+  switch (action.type) {
+    case 'SET_LOCATIONS':
+      return { ...state, locations: action.payload };
+    case 'SET_CATEGORIES':
+      return { ...state, categories: action.payload };
+    case 'SET_SUPPLIERS':
+      return { ...state, suppliers: action.payload };
+    case 'SET_PRODUCTS':
+      return { ...state, products: action.payload };
+    case 'SET_SESSIONS':
+      return { ...state, sessions: action.payload };
+    case 'SET_ORDER_HISTORY':
+      return { ...state, orderHistory: action.payload };
+    case 'SET_CURRENT_SESSION':
+      // When setting a new current session, also add it to sessions if it doesn't exist
+      const newSession = action.payload;
+      if (newSession && !state.sessions.find(s => s.id === newSession.id)) {
+        const updatedSessions = [...state.sessions, newSession];
+        return { 
+          ...state, 
+          currentSession: newSession,
+          sessions: updatedSessions
+        };
+      }
+      return { ...state, currentSession: newSession };
+    case 'ADD_LOCATION':
+      return { ...state, locations: [...state.locations, action.payload] };
+    case 'ADD_CATEGORY':
+      return { ...state, categories: [...state.categories, action.payload] };
+    case 'ADD_SUPPLIER':
+      return { ...state, suppliers: [...state.suppliers, action.payload] };
+    case 'ADD_PRODUCT':
+      return { ...state, products: [...state.products, action.payload] };
+    case 'UPDATE_SESSION':
+      const updatedSessions = state.sessions.map(session =>
+        session.id === action.payload.id ? action.payload : session
+      );
+      
+      // If session doesn't exist in sessions array, add it
+      if (!state.sessions.find(s => s.id === action.payload.id)) {
+        updatedSessions.push(action.payload);
+      }
+      
+      return {
+        ...state,
+        sessions: updatedSessions,
+        currentSession: state.currentSession?.id === action.payload.id ? action.payload : state.currentSession,
+      };
+    case 'ADD_ORDER_HISTORY_ITEMS':
+      return {
+        ...state,
+        orderHistory: [...state.orderHistory, ...action.payload],
+      };
+    case 'UPDATE_LOCATION':
+      return {
+        ...state,
+        locations: state.locations.map(location =>
+          location.id === action.payload.id ? action.payload : location
+        ),
+      };
+    case 'UPDATE_CATEGORY':
+      return {
+        ...state,
+        categories: state.categories.map(category =>
+          category.id === action.payload.id ? action.payload : category
+        ),
+      };
+    case 'UPDATE_SUPPLIER':
+      return {
+        ...state,
+        suppliers: state.suppliers.map(supplier =>
+          supplier.id === action.payload.id ? action.payload : supplier
+        ),
+      };
+    case 'DELETE_LOCATION':
+      return {
+        ...state,
+        locations: state.locations.filter(location => location.id !== action.payload),
+      };
+    case 'DELETE_CATEGORY':
+      return {
+        ...state,
+        categories: state.categories.filter(category => category.id !== action.payload),
+      };
+    case 'DELETE_SUPPLIER':
+      return {
+        ...state,
+        suppliers: state.suppliers.filter(supplier => supplier.id !== action.payload),
+      };
+    
+    case 'DELETE_SESSION':
+      return {
+        ...state,
+        orderHistory: state.orderHistory.filter((item: OrderHistoryItem) => item.sessionId !== action.payload),
+      };
+    default:
+      return state;
+  }
+};
+
+const AppContext = createContext<AppContextType | undefined>(undefined);
+
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [autoSyncEnabled, setAutoSyncEnabled] = React.useState(false);
+
+  // Function to get last order info for a product at a location within 12 months
+  const getLastOrderInfo = (productId: string, locationId: string): { date: string; quantity?: number } | null => {
+    const twelveMonthsAgo = new Date();
+    twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+
+    const productOrders = state.orderHistory
+      .filter(order => 
+        order.productId === productId && 
+        order.locationId === locationId &&
+        new Date(order.orderDate) >= twelveMonthsAgo
+      )
+      .sort((a, b) => new Date(b.orderDate).getTime() - new Date(a.orderDate).getTime());
+
+    if (productOrders.length === 0) return null;
+
+    const lastOrder = productOrders[0];
+    return {
+      date: lastOrder.orderDate,
+      quantity: lastOrder.quantityOrdered,
+    };
+  };
+
+  const syncWithGoogleSheets = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      const savedSheetsId = localStorage.getItem('google-sheets-id');
+      const savedCredentials = localStorage.getItem('google-sheets-credentials');
+
+      if (!savedSheetsId || !savedCredentials) {
+        throw new Error('Google Sheets not configured. Please set up in Settings.');
+      }
+
+      // Dynamic import to avoid loading Google APIs on app start
+      const { GoogleSheetsService } = await import('../services/googleSheets');
+      const sheetsService = new GoogleSheetsService(savedSheetsId);
+      const credentials = JSON.parse(savedCredentials);
+      
+      const initialized = await sheetsService.initialize(credentials);
+      if (!initialized) {
+        throw new Error('Failed to initialize Google Sheets connection');
+      }
+
+      // Sync data from Google Sheets
+      const [locations, categories, suppliers, products, sessions] = await Promise.all([
+        sheetsService.getLocations(),
+        sheetsService.getCategories(),
+        sheetsService.getSuppliers(),
+        sheetsService.getProducts(),
+        sheetsService.getSessions(),
+      ]);
+
+      dispatch({ type: 'SET_LOCATIONS', payload: locations });
+      dispatch({ type: 'SET_CATEGORIES', payload: categories });
+      dispatch({ type: 'SET_SUPPLIERS', payload: suppliers });
+      dispatch({ type: 'SET_PRODUCTS', payload: products });
+      dispatch({ type: 'SET_SESSIONS', payload: sessions });
+
+      // Also save to localStorage as backup
+      localStorage.setItem('cafe-inventory-locations', JSON.stringify(locations));
+      localStorage.setItem('cafe-inventory-categories', JSON.stringify(categories));
+      localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(suppliers));
+      localStorage.setItem('cafe-inventory-products', JSON.stringify(products));
+      localStorage.setItem('cafe-inventory-sessions', JSON.stringify(sessions));
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to sync with Google Sheets');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const syncWithSupabase = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      console.log('Starting Supabase sync...');
+
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+
+      console.log('Supabase credentials:', { 
+        hasUrl: !!savedSupabaseUrl, 
+        hasKey: !!savedSupabaseKey,
+        url: savedSupabaseUrl?.substring(0, 30) + '...' 
+      });
+
+      if (!savedSupabaseUrl || !savedSupabaseKey) {
+        throw new Error('Supabase not configured. Please set up in Settings.');
+      }
+
+      // Dynamic import to avoid loading Supabase on app start if not needed
+      const { SupabaseService } = await import('../services/supabase');
+      const supabaseService = new SupabaseService();
+      
+      console.log('Initializing Supabase service...');
+      const initialized = supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+      if (!initialized) {
+        throw new Error('Failed to initialize Supabase connection');
+      }
+
+      // Test connection
+      console.log('Testing Supabase connection...');
+      const connectionTest = await supabaseService.testConnection();
+      if (!connectionTest) {
+        throw new Error('Failed to connect to Supabase database');
+      }
+      console.log('Supabase connection successful!');
+
+      // FIRST: Push local data to Supabase (merge/upsert)
+      console.log('Pushing local data to Supabase...');
+      console.log('Local state:', {
+        locations: state.locations.length,
+        categories: state.categories.length,
+        suppliers: state.suppliers.length,
+        products: state.products.length,
+        sessions: state.sessions.length
+      });
+      
+      // Push all local data to Supabase
+      for (const location of state.locations) {
+        await supabaseService.upsertLocation(location);
+      }
+      
+      for (const category of state.categories) {
+        await supabaseService.upsertCategory(category);
+      }
+      
+      for (const supplier of state.suppliers) {
+        await supabaseService.upsertSupplier(supplier);
+      }
+      
+      for (const product of state.products) {
+        await supabaseService.upsertProduct(product);
+      }
+      
+      for (const session of state.sessions) {
+        await supabaseService.upsertSession(session);
+      }
+
+      if (state.orderHistory.length > 0) {
+        await supabaseService.addOrderHistoryItems(state.orderHistory);
+      }
+      console.log('Local data push completed!');
+
+      // THEN: Pull fresh data from Supabase (in case others made changes)
+      console.log('Pulling fresh data from Supabase...');
+      const data = await supabaseService.syncFromDatabase();
+      
+      console.log('Data received from Supabase:', data);
+
+      dispatch({ type: 'SET_LOCATIONS', payload: data.locations });
+      dispatch({ type: 'SET_CATEGORIES', payload: data.categories });
+      dispatch({ type: 'SET_SUPPLIERS', payload: data.suppliers });
+      dispatch({ type: 'SET_PRODUCTS', payload: data.products });
+      dispatch({ type: 'SET_SESSIONS', payload: data.sessions });
+      dispatch({ type: 'SET_ORDER_HISTORY', payload: data.orderHistory });
+
+      // Also save to localStorage as backup
+      localStorage.setItem('cafe-inventory-locations', JSON.stringify(data.locations));
+      localStorage.setItem('cafe-inventory-categories', JSON.stringify(data.categories));
+      localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(data.suppliers));
+      localStorage.setItem('cafe-inventory-products', JSON.stringify(data.products));
+      localStorage.setItem('cafe-inventory-sessions', JSON.stringify(data.sessions));
+      localStorage.setItem('cafe-inventory-order-history', JSON.stringify(data.orderHistory));
+      
+      console.log('Supabase sync completed successfully!');
+
+    } catch (error) {
+      console.error('Supabase sync error:', error);
+      setError(error instanceof Error ? error.message : 'Failed to sync with Supabase');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const contextValue: AppContextType = {
+    state,
+    dispatch,
+    isLoading,
+    error,
+    getLastOrderInfo,
+    syncWithGoogleSheets,
+    syncWithSupabase,
+    autoSyncEnabled,
+    setAutoSyncEnabled,
+  };
+
+  // Load initial data from localStorage
+  useEffect(() => {
+    const loadInitialData = () => {
+      try {
+        const storedLocations = localStorage.getItem('cafe-inventory-locations');
+        const storedCategories = localStorage.getItem('cafe-inventory-categories');
+        const storedSuppliers = localStorage.getItem('cafe-inventory-suppliers');
+        const storedProducts = localStorage.getItem('cafe-inventory-products');
+        const storedSessions = localStorage.getItem('cafe-inventory-sessions');
+        const storedOrderHistory = localStorage.getItem('cafe-inventory-order-history');
+
+        if (storedLocations) {
+          dispatch({ type: 'SET_LOCATIONS', payload: JSON.parse(storedLocations) });
+        } else {
+          // Set default locations
+          const defaultLocations: Location[] = [
+            { id: '1', name: 'Main Location', address: '123 Main St' },
+            { id: '2', name: 'Second Location', address: '456 Oak Ave' },
+          ];
+          dispatch({ type: 'SET_LOCATIONS', payload: defaultLocations });
+          localStorage.setItem('cafe-inventory-locations', JSON.stringify(defaultLocations));
+        }
+
+        if (storedCategories) {
+          dispatch({ type: 'SET_CATEGORIES', payload: JSON.parse(storedCategories) });
+        } else {
+          // Set default categories
+          const defaultCategories: Category[] = [
+            { id: '1', name: 'Milks', color: '#E3F2FD' },
+            { id: '2', name: 'Cafe', color: '#FFF3E0' },
+            { id: '3', name: 'Food', color: '#E8F5E8' },
+            { id: '4', name: 'Supplies', color: '#FCE4EC' },
+          ];
+          dispatch({ type: 'SET_CATEGORIES', payload: defaultCategories });
+          localStorage.setItem('cafe-inventory-categories', JSON.stringify(defaultCategories));
+        }
+
+        if (storedSuppliers) {
+          dispatch({ type: 'SET_SUPPLIERS', payload: JSON.parse(storedSuppliers) });
+        } else {
+          // Set default suppliers
+          const defaultSuppliers: Supplier[] = [
+            { id: '1', name: 'Costco' },
+            { id: '2', name: 'Sysco' },
+            { id: '3', name: 'Shoreline' },
+            { id: '4', name: 'Trader Joes' },
+          ];
+          dispatch({ type: 'SET_SUPPLIERS', payload: defaultSuppliers });
+          localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(defaultSuppliers));
+        }
+
+        if (storedProducts) {
+          dispatch({ type: 'SET_PRODUCTS', payload: JSON.parse(storedProducts) });
+        } else {
+          // Add some sample products
+          const defaultProducts: Product[] = [
+            {
+              id: '1',
+              name: 'Whole Milk',
+              categories: ['1', '2'], // Milks, Cafe
+              suppliers: ['1'], // Costco
+              requiresQuantity: true,
+              locations: [
+                { locationId: '1', minThreshold: 5, isAvailable: true },
+                { locationId: '2', minThreshold: 3, isAvailable: true },
+              ],
+            },
+            {
+              id: '2',
+              name: 'Coffee Beans',
+              categories: ['2'], // Cafe
+              suppliers: ['2'], // Sysco
+              requiresQuantity: true,
+              locations: [
+                { locationId: '1', minThreshold: 10, isAvailable: true },
+                { locationId: '2', minThreshold: 8, isAvailable: true },
+              ],
+            },
+            {
+              id: '3',
+              name: 'Sugar Packets',
+              categories: ['4'], // Supplies
+              suppliers: ['4'], // Trader Joes
+              requiresQuantity: false,
+              locations: [
+                { locationId: '1', isAvailable: true },
+                { locationId: '2', isAvailable: true },
+              ],
+            },
+          ];
+          dispatch({ type: 'SET_PRODUCTS', payload: defaultProducts });
+          localStorage.setItem('cafe-inventory-products', JSON.stringify(defaultProducts));
+        }
+
+        if (storedSessions) {
+          dispatch({ type: 'SET_SESSIONS', payload: JSON.parse(storedSessions) });
+        }
+
+        if (storedOrderHistory) {
+          dispatch({ type: 'SET_ORDER_HISTORY', payload: JSON.parse(storedOrderHistory) });
+        } else {
+          // Add some sample order history for demonstration
+          const sampleOrderHistory: OrderHistoryItem[] = [
+            {
+              productId: '1',
+              locationId: '1',
+              orderDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago
+              quantityOrdered: 12,
+              sessionId: 'sample-session-1',
+              suppliers: ['supplier-1'],
+              categoryIds: ['category-1'],
+            },
+            {
+              productId: '2',
+              locationId: '1',
+              orderDate: new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString(), // 45 days ago
+              quantityOrdered: 20,
+              sessionId: 'sample-session-2',
+              suppliers: ['supplier-2'],
+              categoryIds: ['category-2'],
+            },
+          ];
+          dispatch({ type: 'SET_ORDER_HISTORY', payload: sampleOrderHistory });
+          localStorage.setItem('cafe-inventory-order-history', JSON.stringify(sampleOrderHistory));
+        }
+      } catch (error) {
+        console.error('Error loading initial data:', error);
+        setError('Failed to load initial data');
+      }
+    };
+
+    loadInitialData();
+  }, []);
+
+  // Save data to localStorage when state changes
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-locations', JSON.stringify(state.locations));
+  }, [state.locations]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-categories', JSON.stringify(state.categories));
+  }, [state.categories]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(state.suppliers));
+  }, [state.suppliers]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-products', JSON.stringify(state.products));
+  }, [state.products]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-sessions', JSON.stringify(state.sessions));
+  }, [state.sessions]);
+
+  useEffect(() => {
+    localStorage.setItem('cafe-inventory-order-history', JSON.stringify(state.orderHistory));
+  }, [state.orderHistory]);
+
+  return (
+    <AppContext.Provider value={contextValue}>
+      {children}
+    </AppContext.Provider>
+  );
+};
+
+export const useAppContext = () => {
+  const context = useContext(AppContext);
+  if (context === undefined) {
+    throw new Error('useAppContext must be used within an AppProvider');
+  }
+  return context;
+};
