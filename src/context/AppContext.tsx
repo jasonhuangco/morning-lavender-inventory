@@ -332,13 +332,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (state.orderHistory.length > 0) {
         await supabaseService.addOrderHistoryItems(state.orderHistory);
       }
+
+      // Push email settings to Supabase
+      const emailServiceId = localStorage.getItem('emailServiceId');
+      const emailTemplateId = localStorage.getItem('emailTemplateId');
+      const emailPublicKey = localStorage.getItem('emailPublicKey');
+      
+      if (emailServiceId && emailTemplateId && emailPublicKey) {
+        console.log('Pushing email configuration to Supabase...');
+        await Promise.all([
+          supabaseService.upsertAppSetting('emailServiceId', emailServiceId),
+          supabaseService.upsertAppSetting('emailTemplateId', emailTemplateId),
+          supabaseService.upsertAppSetting('emailPublicKey', emailPublicKey),
+        ]);
+      }
+
       console.log('Local data push completed!');
 
       // THEN: Pull fresh data from Supabase (in case others made changes)
       console.log('Pulling fresh data from Supabase...');
       const data = await supabaseService.syncFromDatabase();
       
+      // Also pull app settings (email configuration)
+      const settings = await supabaseService.getAppSettings();
+      
       console.log('Data received from Supabase:', data);
+      console.log('Settings received from Supabase:', Object.keys(settings));
 
       // Filter out sessions that were locally deleted
       const deletedSessions = JSON.parse(localStorage.getItem('deleted-sessions') || '[]');
@@ -370,6 +389,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('cafe-inventory-products', JSON.stringify(data.products));
       localStorage.setItem('cafe-inventory-sessions', JSON.stringify(filteredSessions));
       localStorage.setItem('cafe-inventory-order-history', JSON.stringify(filteredOrderHistory));
+      
+      // Save email settings from database
+      if (settings.emailServiceId) {
+        localStorage.setItem('emailServiceId', settings.emailServiceId);
+      }
+      if (settings.emailTemplateId) {
+        localStorage.setItem('emailTemplateId', settings.emailTemplateId);
+      }
+      if (settings.emailPublicKey) {
+        localStorage.setItem('emailPublicKey', settings.emailPublicKey);
+      }
+
+      // Update email-config object if all parts are available
+      if (settings.emailServiceId && settings.emailTemplateId && settings.emailPublicKey) {
+        const emailConfig = {
+          serviceId: settings.emailServiceId,
+          templateId: settings.emailTemplateId,
+          publicKey: settings.emailPublicKey
+        };
+        localStorage.setItem('email-config', JSON.stringify(emailConfig));
+        console.log('Email configuration synced from database');
+      }
       
       // Clean up old deleted session tracking (older than 30 days)
       // This prevents the deleted-sessions list from growing indefinitely
@@ -431,6 +472,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     autoSyncEnabled,
     setAutoSyncEnabled,
     isInitialized,
+  };
+
+  // Load email configuration from database
+  const loadEmailConfigFromDatabase = async () => {
+    try {
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+
+      if (!savedSupabaseUrl || !savedSupabaseKey) {
+        console.log('Supabase not configured, skipping email config sync');
+        return;
+      }
+
+      console.log('Loading email configuration from database...');
+      const { SupabaseService } = await import('../services/supabase');
+      const supabaseService = new SupabaseService();
+      supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+
+      const settings = await supabaseService.getAppSettings();
+      
+      // Load email settings if they exist in database
+      if (settings.emailServiceId) {
+        localStorage.setItem('emailServiceId', settings.emailServiceId);
+        console.log('Loaded email service ID from database');
+      }
+      if (settings.emailTemplateId) {
+        localStorage.setItem('emailTemplateId', settings.emailTemplateId);
+        console.log('Loaded email template ID from database');
+      }
+      if (settings.emailPublicKey) {
+        localStorage.setItem('emailPublicKey', settings.emailPublicKey);
+        console.log('Loaded email public key from database');
+      }
+
+      // Create email-config object for compatibility
+      if (settings.emailServiceId && settings.emailTemplateId && settings.emailPublicKey) {
+        const emailConfig = {
+          serviceId: settings.emailServiceId,
+          templateId: settings.emailTemplateId,
+          publicKey: settings.emailPublicKey
+        };
+        localStorage.setItem('email-config', JSON.stringify(emailConfig));
+        console.log('Email configuration loaded and synchronized from database');
+      }
+
+    } catch (error) {
+      console.warn('Failed to load email configuration from database:', error);
+    }
   };
 
   // Load initial data from localStorage and auto-sync with Supabase
@@ -574,6 +663,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             console.log('Using localStorage data (Supabase sync skipped)');
           }
         }
+
+        // Load email configuration from database if available
+        await loadEmailConfigFromDatabase();
         
       } catch (error) {
         console.error('Error loading initial data:', error);

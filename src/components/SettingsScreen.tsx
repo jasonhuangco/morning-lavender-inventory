@@ -247,18 +247,68 @@ const SettingsScreen: React.FC = () => {
     setEmailTesting(false);
   };
 
-  const handleSaveEmailSettings = () => {
-    // Save email settings to localStorage
-    localStorage.setItem('emailServiceId', emailServiceId);
-    localStorage.setItem('emailTemplateId', emailTemplateId);
-    localStorage.setItem('emailPublicKey', emailPublicKey);
-    setEmailTestResult('✅ Email settings saved successfully!');
-    
-    // Close dialog after a short delay to show the success message
-    setTimeout(() => {
-      setShowEmailDialog(false);
-      setEmailTestResult('');
-    }, 1500);
+    const handleSaveEmailSettings = async () => {
+    try {
+      setEmailTesting(true);
+      setEmailTestResult('Saving email settings...');
+      
+      // Save to localStorage first for immediate use
+      localStorage.setItem('emailServiceId', emailServiceId);
+      localStorage.setItem('emailTemplateId', emailTemplateId);
+      localStorage.setItem('emailPublicKey', emailPublicKey);
+      
+      // Create email-config object for compatibility
+      const emailConfig = {
+        serviceId: emailServiceId,
+        templateId: emailTemplateId,
+        publicKey: emailPublicKey
+      };
+      localStorage.setItem('email-config', JSON.stringify(emailConfig));
+
+      // Try to save to database if Supabase is configured
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+      
+      let databaseSaveStatus = 'not-configured';
+      
+      if (savedSupabaseUrl && savedSupabaseKey) {
+        try {
+          const { SupabaseService } = await import('../services/supabase');
+          const supabaseService = new SupabaseService();
+          supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+
+          const promises = [
+            supabaseService.upsertAppSetting('emailServiceId', emailServiceId),
+            supabaseService.upsertAppSetting('emailTemplateId', emailTemplateId),
+            supabaseService.upsertAppSetting('emailPublicKey', emailPublicKey)
+          ];
+
+          const results = await Promise.all(promises);
+          databaseSaveStatus = results.every(r => r) ? 'success' : 'partial-failure';
+          
+        } catch (dbError) {
+          console.warn('Failed to save email settings to database:', dbError);
+          databaseSaveStatus = 'failure';
+        }
+      }
+
+      // Provide appropriate user feedback
+      if (databaseSaveStatus === 'success') {
+        setEmailTestResult('✅ Email settings saved successfully to both local storage and cloud database!');
+      } else if (databaseSaveStatus === 'failure') {
+        setEmailTestResult('⚠️ Email settings saved locally. Cloud sync failed - please check your Supabase configuration.');
+      } else if (databaseSaveStatus === 'not-configured') {
+        setEmailTestResult('✅ Email settings saved locally. Configure Supabase to sync across devices.');
+      } else {
+        setEmailTestResult('⚠️ Email settings saved locally. Some cloud settings may not have synced properly.');
+      }
+      
+    } catch (error) {
+      console.error('Error saving email settings:', error);
+      setEmailTestResult('❌ Failed to save email settings. Please try again.');
+    } finally {
+      setEmailTesting(false);
+    }
   };
 
   const handleTestGoogleSheets = async () => {
@@ -906,8 +956,8 @@ const SettingsScreen: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setShowEmailDialog(false)}>Cancel</Button>
-          <Button onClick={handleSaveEmailSettings} variant="contained">
-            Save
+          <Button onClick={handleSaveEmailSettings} variant="contained" disabled={emailTesting}>
+            {emailTesting ? 'Saving...' : 'Save'}
           </Button>
         </DialogActions>
       </Dialog>

@@ -145,6 +145,25 @@ interface Database {
           category_ids?: string[] | null;
         };
       };
+      app_settings: {
+        Row: {
+          id: string;
+          setting_key: string;
+          setting_value: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          setting_key: string;
+          setting_value: string;
+        };
+        Update: {
+          id?: string;
+          setting_key?: string;
+          setting_value?: string;
+        };
+      };
     };
   };
 }
@@ -168,26 +187,71 @@ export class SupabaseService {
     return this.supabase !== null;
   }
 
-  // Test connection
+    // Test database connection
   async testConnection(): Promise<boolean> {
-    if (!this.supabase) {
-      console.error('Supabase client not initialized');
-      return false;
-    }
+    if (!this.supabase) return false;
     
     try {
-      console.log('Testing Supabase connection...');
-      const { data, error } = await this.supabase.from('locations').select('count').limit(1);
+      // Try to fetch a simple query to test the connection
+      const { data, error } = await this.supabase
+        .from('locations')
+        .select('id')
+        .limit(1);
       
-      if (error) {
-        console.error('Supabase connection test error:', error);
+      if (error && error.code === '42P01') {
+        // Table doesn't exist, let's try to create basic tables
+        console.log('Database tables do not exist. You may need to run the setup SQL in your Supabase dashboard.');
         return false;
       }
       
-      console.log('Supabase connection test successful, data:', data);
+      return !error;
+    } catch (error) {
+      console.error('Connection test failed:', error);
+      return false;
+    }
+  }
+
+  // Ensure app_settings table exists and create it if it doesn't
+  async ensureAppSettingsTable(): Promise<boolean> {
+    if (!this.supabase) return false;
+    
+    try {
+      // Test if app_settings table exists by trying to select from it
+      const { error } = await this.supabase
+        .from('app_settings')
+        .select('id')
+        .limit(1);
+      
+      if (error && error.code === '42P01') {
+        // Table doesn't exist - user needs to create it manually
+        console.warn('app_settings table does not exist. Please create it in your Supabase dashboard with this SQL:');
+        console.warn(`
+CREATE TABLE app_settings (
+  id text PRIMARY KEY,
+  setting_key text UNIQUE NOT NULL,
+  setting_value text NOT NULL,
+  created_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL,
+  updated_at timestamp with time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- Create an updated_at trigger
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = timezone('utc'::text, now());
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_app_settings_updated_at BEFORE UPDATE
+ON app_settings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        `);
+        return false;
+      }
+      
       return true;
     } catch (error) {
-      console.error('Supabase connection test failed:', error);
+      console.error('Error checking app_settings table:', error);
       return false;
     }
   }
@@ -561,5 +625,83 @@ export class SupabaseService {
       sessions,
       orderHistory,
     };
+  }
+
+  // App Settings Management
+  async getAppSettings(): Promise<Record<string, string>> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    // Ensure table exists
+    const tableExists = await this.ensureAppSettingsTable();
+    if (!tableExists) {
+      console.warn('app_settings table does not exist, returning empty settings');
+      return {};
+    }
+
+    const { data, error } = await this.supabase
+      .from('app_settings')
+      .select('setting_key, setting_value');
+
+    if (error) {
+      console.error('Error fetching app settings:', error);
+      return {};
+    }
+
+    // Convert array to key-value object
+    const settings: Record<string, string> = {};
+    data?.forEach(item => {
+      settings[item.setting_key] = item.setting_value;
+    });
+
+    return settings;
+  }
+
+  async upsertAppSetting(key: string, value: string): Promise<boolean> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    // Ensure table exists
+    const tableExists = await this.ensureAppSettingsTable();
+    if (!tableExists) {
+      console.warn('app_settings table does not exist, cannot save setting');
+      return false;
+    }
+
+    const { error } = await this.supabase
+      .from('app_settings')
+      .upsert({
+        id: key, // Use key as ID for simplicity
+        setting_key: key,
+        setting_value: value,
+      });
+
+    if (error) {
+      console.error('Error upserting app setting:', error);
+      return false;
+    }
+
+    return true;
+  }
+
+  async deleteAppSetting(key: string): Promise<boolean> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    // Ensure table exists
+    const tableExists = await this.ensureAppSettingsTable();
+    if (!tableExists) {
+      console.warn('app_settings table does not exist, cannot delete setting');
+      return false;
+    }
+
+    const { error } = await this.supabase
+      .from('app_settings')
+      .delete()
+      .eq('setting_key', key);
+
+    if (error) {
+      console.error('Error deleting app setting:', error);
+      return false;
+    }
+
+    return true;
   }
 }
