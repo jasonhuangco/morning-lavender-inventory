@@ -353,6 +353,129 @@ ON app_settings FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
     return !error;
   }
 
+  async deleteCategory(categoryId: string): Promise<boolean> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    try {
+      // First, get all products that reference this category
+      const { data: products, error: productsError } = await this.supabase
+        .from('products')
+        .select('*')
+        .contains('categories', [categoryId]);
+
+      if (productsError) {
+        console.error('Error fetching products with category:', productsError);
+        throw productsError;
+      }
+
+      // Update each product to remove the category reference
+      if (products && products.length > 0) {
+        const updatePromises = products.map(product => {
+          const updatedCategories = product.categories.filter((catId: string) => catId !== categoryId);
+          return this.supabase!
+            .from('products')
+            .update({ categories: updatedCategories })
+            .eq('id', product.id);
+        });
+
+        const updateResults = await Promise.all(updatePromises);
+        const updateErrors = updateResults.filter(result => result.error);
+        
+        if (updateErrors.length > 0) {
+          console.error('Error updating products:', updateErrors);
+          throw new Error(`Failed to update ${updateErrors.length} products`);
+        }
+
+        console.log(`Updated ${products.length} products to remove category reference`);
+      }
+
+      // Now delete the category
+      const { error: deleteError } = await this.supabase
+        .from('categories')
+        .delete()
+        .eq('id', categoryId);
+
+      if (deleteError) {
+        console.error('Error deleting category:', deleteError);
+        throw deleteError;
+      }
+
+      console.log(`Successfully deleted category ${categoryId}`);
+      return true;
+
+    } catch (error) {
+      console.error('Category deletion failed:', error);
+      return false;
+    }
+  }
+
+  async deleteProduct(productId: string): Promise<boolean> {
+    if (!this.supabase) throw new Error('Supabase not initialized');
+
+    try {
+      // First, remove the product from any inventory sessions
+      const { data: sessions, error: sessionsError } = await this.supabase
+        .from('sessions')
+        .select('*');
+
+      if (sessionsError) {
+        console.error('Error fetching sessions for product cleanup:', sessionsError);
+        // Continue with deletion even if we can't clean up sessions
+      }
+
+      if (sessions && sessions.length > 0) {
+        const updatePromises = sessions
+          .filter(session => {
+            const items = session.items || [];
+            return items.some((item: any) => item.productId === productId);
+          })
+          .map(session => {
+            const updatedItems = session.items.filter((item: any) => item.productId !== productId);
+            return this.supabase!
+              .from('sessions')
+              .update({ items: updatedItems })
+              .eq('id', session.id);
+          });
+
+        if (updatePromises.length > 0) {
+          const updateResults = await Promise.all(updatePromises);
+          const updateErrors = updateResults.filter(result => result.error);
+          
+          if (updateErrors.length > 0) {
+            console.error('Error updating sessions:', updateErrors);
+            // Continue with deletion even if session cleanup partially fails
+          } else {
+            console.log(`Updated ${updatePromises.length} sessions to remove product reference`);
+          }
+        }
+      }
+
+      // Delete from order history
+      await this.supabase
+        .from('order_history')
+        .delete()
+        .eq('product_id', productId);
+
+      // Now delete the product
+      const { error: deleteError } = await this.supabase
+        .from('products')
+        .delete()
+        .eq('id', productId);
+
+      if (deleteError) {
+        console.error('Error deleting product:', deleteError);
+        throw deleteError;
+      }
+
+      console.log(`Successfully deleted product ${productId}`);
+      return true;
+
+    } catch (error) {
+      console.error('Product deletion failed:', error);
+      return false;
+    }
+  }
+
   // Suppliers
   async getSuppliers(): Promise<Supplier[]> {
     if (!this.supabase) throw new Error('Supabase not initialized');

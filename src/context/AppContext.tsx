@@ -7,8 +7,8 @@ interface AppContextType {
   isLoading: boolean;
   error: string | null;
   getLastOrderInfo: (productId: string, locationId: string) => { date: string; quantity?: number } | null;
-  syncWithGoogleSheets: () => Promise<void>;
-  syncWithSupabase: () => Promise<void>;
+  syncWithSupabase: (forcePullFirst?: boolean) => Promise<void>;
+  pullFromDatabase: () => Promise<void>;
   autoSyncEnabled: boolean;
   setAutoSyncEnabled: (enabled: boolean) => void;
   isInitialized: boolean;
@@ -33,9 +33,11 @@ type AppAction =
   | { type: 'UPDATE_LOCATION'; payload: Location }
   | { type: 'UPDATE_CATEGORY'; payload: Category }
   | { type: 'UPDATE_SUPPLIER'; payload: Supplier }
+  | { type: 'UPDATE_PRODUCT'; payload: Product }
   | { type: 'DELETE_LOCATION'; payload: string }
   | { type: 'DELETE_CATEGORY'; payload: string }
   | { type: 'DELETE_SUPPLIER'; payload: string }
+  | { type: 'DELETE_PRODUCT'; payload: string }
   | { type: 'DELETE_SESSION'; payload: string };
 
 const initialState: AppState = {
@@ -139,20 +141,68 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
           supplier.id === action.payload.id ? action.payload : supplier
         ),
       };
+    case 'UPDATE_PRODUCT':
+      return {
+        ...state,
+        products: state.products.map(product =>
+          product.id === action.payload.id ? action.payload : product
+        ),
+      };
     case 'DELETE_LOCATION':
       return {
         ...state,
         locations: state.locations.filter(location => location.id !== action.payload),
       };
     case 'DELETE_CATEGORY':
+      // Track deleted category ID with timestamp to prevent it from coming back during sync
+      const deletedCategories = JSON.parse(localStorage.getItem('deleted-categories') || '[]');
+      const deletedCategoriesWithTimestamp = JSON.parse(localStorage.getItem('deleted-categories-with-timestamp') || '[]');
+      
+      deletedCategories.push(action.payload);
+      deletedCategoriesWithTimestamp.push({
+        categoryId: action.payload,
+        timestamp: Date.now()
+      });
+      
+      localStorage.setItem('deleted-categories', JSON.stringify(deletedCategories));
+      localStorage.setItem('deleted-categories-with-timestamp', JSON.stringify(deletedCategoriesWithTimestamp));
+
       return {
         ...state,
         categories: state.categories.filter(category => category.id !== action.payload),
+        // Also update products to remove the deleted category reference
+        products: state.products.map(product => ({
+          ...product,
+          categories: product.categories.filter(catId => catId !== action.payload)
+        }))
       };
     case 'DELETE_SUPPLIER':
       return {
         ...state,
         suppliers: state.suppliers.filter(supplier => supplier.id !== action.payload),
+      };
+    case 'DELETE_PRODUCT':
+      // Track deleted product ID with timestamp to prevent it from coming back during sync
+      const deletedProducts = JSON.parse(localStorage.getItem('deleted-products') || '[]');
+      const deletedProductsWithTimestamp = JSON.parse(localStorage.getItem('deleted-products-with-timestamp') || '[]');
+      
+      deletedProducts.push(action.payload);
+      deletedProductsWithTimestamp.push({
+        productId: action.payload,
+        timestamp: Date.now()
+      });
+      
+      localStorage.setItem('deleted-products', JSON.stringify(deletedProducts));
+      localStorage.setItem('deleted-products-with-timestamp', JSON.stringify(deletedProductsWithTimestamp));
+
+      return {
+        ...state,
+        products: state.products.filter(product => product.id !== action.payload),
+        // Also remove the product from any active sessions
+        currentSession: state.currentSession ? {
+          ...state.currentSession,
+          items: state.currentSession.items.filter(item => item.productId !== action.payload)
+        } : state.currentSession
       };
     
     case 'DELETE_SESSION':
@@ -210,62 +260,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
-  const syncWithGoogleSheets = async () => {
+  const syncWithSupabase = async (forcePullFirst: boolean = false) => {
     try {
       setIsLoading(true);
       setError(null);
-
-      const savedSheetsId = localStorage.getItem('google-sheets-id');
-      const savedCredentials = localStorage.getItem('google-sheets-credentials');
-
-      if (!savedSheetsId || !savedCredentials) {
-        throw new Error('Google Sheets not configured. Please set up in Settings.');
-      }
-
-      // Dynamic import to avoid loading Google APIs on app start
-      const { GoogleSheetsService } = await import('../services/googleSheets');
-      const sheetsService = new GoogleSheetsService(savedSheetsId);
-      const credentials = JSON.parse(savedCredentials);
-      
-      const initialized = await sheetsService.initialize(credentials);
-      if (!initialized) {
-        throw new Error('Failed to initialize Google Sheets connection');
-      }
-
-      // Sync data from Google Sheets
-      const [locations, categories, suppliers, products, sessions] = await Promise.all([
-        sheetsService.getLocations(),
-        sheetsService.getCategories(),
-        sheetsService.getSuppliers(),
-        sheetsService.getProducts(),
-        sheetsService.getSessions(),
-      ]);
-
-      dispatch({ type: 'SET_LOCATIONS', payload: locations });
-      dispatch({ type: 'SET_CATEGORIES', payload: categories });
-      dispatch({ type: 'SET_SUPPLIERS', payload: suppliers });
-      dispatch({ type: 'SET_PRODUCTS', payload: products });
-      dispatch({ type: 'SET_SESSIONS', payload: sessions });
-
-      // Also save to localStorage as backup
-      localStorage.setItem('cafe-inventory-locations', JSON.stringify(locations));
-      localStorage.setItem('cafe-inventory-categories', JSON.stringify(categories));
-      localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(suppliers));
-      localStorage.setItem('cafe-inventory-products', JSON.stringify(products));
-      localStorage.setItem('cafe-inventory-sessions', JSON.stringify(sessions));
-
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Failed to sync with Google Sheets');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const syncWithSupabase = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      console.log('Starting Supabase sync...');
+      console.log('Starting Supabase sync...', { forcePullFirst });
 
       const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
       const savedSupabaseKey = localStorage.getItem('supabaseKey');
@@ -298,8 +297,95 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       console.log('Supabase connection successful!');
 
-      // FIRST: Push local data to Supabase (merge/upsert)
-      console.log('Pushing local data to Supabase...');
+      if (forcePullFirst) {
+        console.log('🔄 Database-first sync: Pulling latest data from Supabase...');
+        
+        // FIRST: Pull data from Supabase to get latest state
+        const data = await supabaseService.syncFromDatabase();
+        const settings = await supabaseService.getAppSettings();
+        
+        console.log('Database data retrieved:', {
+          locations: data.locations.length,
+          categories: data.categories.length,
+          suppliers: data.suppliers.length,
+          products: data.products.length,
+          sessions: data.sessions.length
+        });
+
+        // Filter out sessions that were locally deleted
+        const deletedSessions = JSON.parse(localStorage.getItem('deleted-sessions') || '[]');
+        const filteredSessions = data.sessions.filter(session => !deletedSessions.includes(session.id));
+        const filteredOrderHistory = data.orderHistory.filter(item => !deletedSessions.includes(item.sessionId));
+        
+        // Filter out categories that were locally deleted
+        const deletedCategories = JSON.parse(localStorage.getItem('deleted-categories') || '[]');
+        const filteredCategories = data.categories.filter(category => !deletedCategories.includes(category.id));
+        
+        // Filter out products that were locally deleted
+        const deletedProducts = JSON.parse(localStorage.getItem('deleted-products') || '[]');
+        const filteredProducts = data.products.filter(product => !deletedProducts.includes(product.id));
+        
+        if (filteredSessions.length !== data.sessions.length) {
+          console.log(`Filtered out ${data.sessions.length - filteredSessions.length} locally deleted sessions`);
+        }
+        
+        if (filteredCategories.length !== data.categories.length) {
+          console.log(`Filtered out ${data.categories.length - filteredCategories.length} locally deleted categories`);
+        }
+        
+        if (filteredProducts.length !== data.products.length) {
+          console.log(`Filtered out ${data.products.length - filteredProducts.length} locally deleted products`);
+        }
+
+        // Update state with database data
+        dispatch({ type: 'SET_LOCATIONS', payload: data.locations });
+        dispatch({ type: 'SET_CATEGORIES', payload: filteredCategories });
+        dispatch({ type: 'SET_SUPPLIERS', payload: data.suppliers });
+        dispatch({ type: 'SET_PRODUCTS', payload: filteredProducts });
+        dispatch({ type: 'SET_SESSIONS', payload: filteredSessions });
+        dispatch({ type: 'SET_ORDER_HISTORY', payload: filteredOrderHistory });
+
+        // Preserve current session if it exists and isn't in the synced sessions
+        if (state.currentSession && !filteredSessions.find(s => s.id === state.currentSession!.id)) {
+          console.log('Preserving current session that was not in sync data');
+        }
+
+        // Update localStorage with database data
+        localStorage.setItem('cafe-inventory-locations', JSON.stringify(data.locations));
+        localStorage.setItem('cafe-inventory-categories', JSON.stringify(filteredCategories));
+        localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(data.suppliers));
+        localStorage.setItem('cafe-inventory-products', JSON.stringify(filteredProducts));
+        localStorage.setItem('cafe-inventory-sessions', JSON.stringify(filteredSessions));
+        localStorage.setItem('cafe-inventory-order-history', JSON.stringify(filteredOrderHistory));
+        
+        // Update email settings from database
+        if (settings.emailServiceId) {
+          localStorage.setItem('emailServiceId', settings.emailServiceId);
+        }
+        if (settings.emailTemplateId) {
+          localStorage.setItem('emailTemplateId', settings.emailTemplateId);
+        }
+        if (settings.emailPublicKey) {
+          localStorage.setItem('emailPublicKey', settings.emailPublicKey);
+        }
+
+        // Update email-config object if all parts are available
+        if (settings.emailServiceId && settings.emailTemplateId && settings.emailPublicKey) {
+          const emailConfig = {
+            serviceId: settings.emailServiceId,
+            templateId: settings.emailTemplateId,
+            publicKey: settings.emailPublicKey
+          };
+          localStorage.setItem('email-config', JSON.stringify(emailConfig));
+          console.log('Email configuration synced from database');
+        }
+
+        console.log('✅ Database-first sync completed successfully!');
+        return;
+      }
+
+      // Default behavior: Push local changes first, then pull updates
+      console.log('📤 Local-first sync: Pushing local data to Supabase...');
       console.log('Local state:', {
         locations: state.locations.length,
         categories: state.categories.length,
@@ -364,14 +450,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const filteredSessions = data.sessions.filter(session => !deletedSessions.includes(session.id));
       const filteredOrderHistory = data.orderHistory.filter(item => !deletedSessions.includes(item.sessionId));
       
+      // Filter out categories that were locally deleted
+      const deletedCategories = JSON.parse(localStorage.getItem('deleted-categories') || '[]');
+      const filteredCategories = data.categories.filter(category => !deletedCategories.includes(category.id));
+      
+      // Filter out products that were locally deleted
+      const deletedProducts = JSON.parse(localStorage.getItem('deleted-products') || '[]');
+      const filteredProducts = data.products.filter(product => !deletedProducts.includes(product.id));
+      
       if (filteredSessions.length !== data.sessions.length) {
         console.log(`Filtered out ${data.sessions.length - filteredSessions.length} locally deleted sessions`);
       }
+      
+      if (filteredCategories.length !== data.categories.length) {
+        console.log(`Filtered out ${data.categories.length - filteredCategories.length} locally deleted categories`);
+      }
+      
+      if (filteredProducts.length !== data.products.length) {
+        console.log(`Filtered out ${data.products.length - filteredProducts.length} locally deleted products`);
+      }
 
       dispatch({ type: 'SET_LOCATIONS', payload: data.locations });
-      dispatch({ type: 'SET_CATEGORIES', payload: data.categories });
+      dispatch({ type: 'SET_CATEGORIES', payload: filteredCategories });
       dispatch({ type: 'SET_SUPPLIERS', payload: data.suppliers });
-      dispatch({ type: 'SET_PRODUCTS', payload: data.products });
+      dispatch({ type: 'SET_PRODUCTS', payload: filteredProducts });
       dispatch({ type: 'SET_SESSIONS', payload: filteredSessions });
       dispatch({ type: 'SET_ORDER_HISTORY', payload: filteredOrderHistory });
 
@@ -384,9 +486,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Also save to localStorage as backup
       localStorage.setItem('cafe-inventory-locations', JSON.stringify(data.locations));
-      localStorage.setItem('cafe-inventory-categories', JSON.stringify(data.categories));
+      localStorage.setItem('cafe-inventory-categories', JSON.stringify(filteredCategories));
       localStorage.setItem('cafe-inventory-suppliers', JSON.stringify(data.suppliers));
-      localStorage.setItem('cafe-inventory-products', JSON.stringify(data.products));
+      localStorage.setItem('cafe-inventory-products', JSON.stringify(filteredProducts));
       localStorage.setItem('cafe-inventory-sessions', JSON.stringify(filteredSessions));
       localStorage.setItem('cafe-inventory-order-history', JSON.stringify(filteredOrderHistory));
       
@@ -422,6 +524,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const recentDeletedSessions = validDeletedSessions.map((entry: any) => entry.sessionId);
       localStorage.setItem('deleted-sessions', JSON.stringify(recentDeletedSessions));
       localStorage.setItem('deleted-sessions-with-timestamp', JSON.stringify(validDeletedSessions));
+      
+      // Clean up deleted categories list as well (same 30-day threshold)
+      const deletedCategoriesWithTimestamp = JSON.parse(localStorage.getItem('deleted-categories-with-timestamp') || '[]');
+      const validDeletedCategories = deletedCategoriesWithTimestamp.filter((entry: any) => entry.timestamp > cleanupThreshold);
+      
+      // Update the simple deleted-categories list with only recent deletions
+      const recentDeletedCategories = validDeletedCategories.map((entry: any) => entry.categoryId);
+      localStorage.setItem('deleted-categories', JSON.stringify(recentDeletedCategories));
+      localStorage.setItem('deleted-categories-with-timestamp', JSON.stringify(validDeletedCategories));
+      
+      // Clean up deleted products list as well (same 30-day threshold)
+      const deletedProductsWithTimestamp = JSON.parse(localStorage.getItem('deleted-products-with-timestamp') || '[]');
+      const validDeletedProducts = deletedProductsWithTimestamp.filter((entry: any) => entry.timestamp > cleanupThreshold);
+      
+      // Update the simple deleted-products list with only recent deletions
+      const recentDeletedProducts = validDeletedProducts.map((entry: any) => entry.productId);
+      localStorage.setItem('deleted-products', JSON.stringify(recentDeletedProducts));
+      localStorage.setItem('deleted-products-with-timestamp', JSON.stringify(validDeletedProducts));
       
       console.log('Supabase sync completed successfully!');
 
@@ -461,14 +581,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Convenience function for pulling database changes
+  const pullFromDatabase = async () => {
+    await syncWithSupabase(true);
+  };
+
   const contextValue: AppContextType = {
     state,
     dispatch,
     isLoading,
     error,
     getLastOrderInfo,
-    syncWithGoogleSheets,
     syncWithSupabase,
+    pullFromDatabase,
     autoSyncEnabled,
     setAutoSyncEnabled,
     isInitialized,

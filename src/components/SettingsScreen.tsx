@@ -31,21 +31,23 @@ import {
   ExpandMore as ExpandMoreIcon,
   Email as EmailIcon,
   CloudSync as CloudSyncIcon,
-  Storage as StorageIcon,
 } from '@mui/icons-material';
 import { useAppContext } from '../context/AppContext';
-import { Location, Category, Supplier, OrderSummary } from '../types';
+import { Location, Category, Supplier, Product, OrderSummary } from '../types';
 import { EmailService } from '../services/emailService';
+import EditProductDialog from './EditProductDialog';
 
 const SettingsScreen: React.FC = () => {
-  const { state, dispatch, syncWithGoogleSheets, syncWithSupabase, autoSyncEnabled, setAutoSyncEnabled } = useAppContext();
+  const { state, dispatch, syncWithSupabase, pullFromDatabase, autoSyncEnabled, setAutoSyncEnabled } = useAppContext();
   const [showLocationDialog, setShowLocationDialog] = useState(false);
   const [showCategoryDialog, setShowCategoryDialog] = useState(false);
   const [showSupplierDialog, setShowSupplierDialog] = useState(false);
   const [showEmailDialog, setShowEmailDialog] = useState(false);
+  const [showEditProductDialog, setShowEditProductDialog] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [editingLocation, setEditingLocation] = useState<Location | null>(null);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [locationName, setLocationName] = useState('');
   const [locationAddress, setLocationAddress] = useState('');
   const [categoryName, setCategoryName] = useState('');
@@ -56,10 +58,6 @@ const SettingsScreen: React.FC = () => {
   const [emailPublicKey, setEmailPublicKey] = useState('');
   const [emailTesting, setEmailTesting] = useState(false);
   const [emailTestResult, setEmailTestResult] = useState('');
-  const [sheetsSpreadsheetId, setSheetsSpreadsheetId] = useState('');
-  const [sheetsCredentials, setSheetsCredentials] = useState<File | null>(null);
-  const [sheetsTesting, setSheetsTesting] = useState(false);
-  const [sheetsTestResult, setSheetsTestResult] = useState('');
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [syncResult, setSyncResult] = useState('');
   const [supabaseUrl, setSupabaseUrl] = useState('');
@@ -68,6 +66,8 @@ const SettingsScreen: React.FC = () => {
   const [supabaseTestResult, setSupabaseTestResult] = useState('');
   const [supabaseSyncInProgress, setSupabaseSyncInProgress] = useState(false);
   const [supabaseSyncResult, setSupabaseSyncResult] = useState('');
+  const [supabasePullInProgress, setSupabasePullInProgress] = useState(false);
+  const [supabasePullResult, setSupabasePullResult] = useState('');
 
   // Load saved settings on component mount
   React.useEffect(() => {
@@ -76,14 +76,12 @@ const SettingsScreen: React.FC = () => {
     const savedEmailPublicKey = localStorage.getItem('emailPublicKey');
     const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
     const savedSupabaseKey = localStorage.getItem('supabaseKey');
-    const savedSheetsSpreadsheetId = localStorage.getItem('googleSheetsSpreadsheetId');
 
     if (savedEmailServiceId) setEmailServiceId(savedEmailServiceId);
     if (savedEmailTemplateId) setEmailTemplateId(savedEmailTemplateId);
     if (savedEmailPublicKey) setEmailPublicKey(savedEmailPublicKey);
     if (savedSupabaseUrl) setSupabaseUrl(savedSupabaseUrl);
     if (savedSupabaseKey) setSupabaseKey(savedSupabaseKey);
-    if (savedSheetsSpreadsheetId) setSheetsSpreadsheetId(savedSheetsSpreadsheetId);
   }, []);
 
   const handleAddLocation = () => {
@@ -161,9 +159,38 @@ const SettingsScreen: React.FC = () => {
     setEditingCategory(null);
   };
 
-  const handleDeleteCategory = (category: Category) => {
+  const handleDeleteCategory = async (category: Category) => {
     if (confirm(`Are you sure you want to delete "${category.name}"?`)) {
+      // Delete from local state first
       dispatch({ type: 'DELETE_CATEGORY', payload: category.id });
+      
+      // Try to sync deletion with Supabase if configured
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+      
+      if (savedSupabaseUrl && savedSupabaseKey) {
+        try {
+          console.log('Deleting category from Supabase:', category.id);
+          const { SupabaseService } = await import('../services/supabase');
+          const supabaseService = new SupabaseService();
+          supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+          
+          const success = await supabaseService.deleteCategory(category.id);
+          if (!success) {
+            console.error('Failed to delete category from Supabase');
+            // Note: We don't revert the local deletion since the user intended to delete it
+            // The deletion tracking will prevent it from coming back during sync
+          } else {
+            console.log('Category successfully deleted from Supabase');
+          }
+        } catch (error) {
+          console.error('Error deleting category from Supabase:', error);
+          // Note: We don't revert the local deletion since the user intended to delete it
+          // The deletion tracking will prevent it from coming back during sync
+        }
+      } else {
+        console.log('Supabase not configured, skipping database deletion');
+      }
     }
   };
 
@@ -211,6 +238,51 @@ const SettingsScreen: React.FC = () => {
     setEditingSupplier(supplier);
     setSupplierName(supplier.name);
     setShowSupplierDialog(true);
+  };
+
+  const handleDeleteProduct = async (product: Product) => {
+    if (confirm(`Are you sure you want to delete "${product.name}"? This will remove it from all inventory sessions and cannot be undone.`)) {
+      // Delete from local state first
+      dispatch({ type: 'DELETE_PRODUCT', payload: product.id });
+      
+      // Try to sync deletion with Supabase if configured
+      const savedSupabaseUrl = localStorage.getItem('supabaseUrl');
+      const savedSupabaseKey = localStorage.getItem('supabaseKey');
+      
+      if (savedSupabaseUrl && savedSupabaseKey) {
+        try {
+          console.log('Deleting product from Supabase:', product.id);
+          const { SupabaseService } = await import('../services/supabase');
+          const supabaseService = new SupabaseService();
+          supabaseService.initialize(savedSupabaseUrl, savedSupabaseKey);
+          
+          const success = await supabaseService.deleteProduct(product.id);
+          if (!success) {
+            console.error('Failed to delete product from Supabase');
+            // Note: We don't revert the local deletion since the user intended to delete it
+            // The deletion tracking will prevent it from coming back during sync
+          } else {
+            console.log('Product successfully deleted from Supabase');
+          }
+        } catch (error) {
+          console.error('Error deleting product from Supabase:', error);
+          // Note: We don't revert the local deletion since the user intended to delete it
+          // The deletion tracking will prevent it from coming back during sync
+        }
+      } else {
+        console.log('Supabase not configured, skipping database deletion');
+      }
+    }
+  };
+
+  const handleEditProduct = (product: Product) => {
+    setEditingProduct(product);
+    setShowEditProductDialog(true);
+  };
+
+  const handleCloseEditProductDialog = () => {
+    setShowEditProductDialog(false);
+    setEditingProduct(null);
   };
 
   const handleTestEmail = async () => {
@@ -311,44 +383,6 @@ const SettingsScreen: React.FC = () => {
     }
   };
 
-  const handleTestGoogleSheets = async () => {
-    if (!sheetsSpreadsheetId || !sheetsCredentials) {
-      setSheetsTestResult('Please provide both spreadsheet ID and credentials file.');
-      return;
-    }
-
-    setSheetsTesting(true);
-    try {
-      // Test connection logic would go here
-      setSheetsTestResult('Google Sheets connection test successful!');
-    } catch (error) {
-      setSheetsTestResult(`Google Sheets test failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-    setSheetsTesting(false);
-  };
-
-  const handleSaveGoogleSheetsSettings = () => {
-    // Save Google Sheets settings to localStorage
-    localStorage.setItem('googleSheetsSpreadsheetId', sheetsSpreadsheetId);
-    setSheetsTestResult('✅ Google Sheets settings saved successfully!');
-    
-    // Clear the message after a short delay
-    setTimeout(() => {
-      setSheetsTestResult('');
-    }, 3000);
-  };
-
-  const handleSyncWithGoogleSheets = async () => {
-    setSyncInProgress(true);
-    try {
-      await syncWithGoogleSheets();
-      setSyncResult('Sync with Google Sheets successful!');
-    } catch (error) {
-      setSyncResult(`Sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-    setSyncInProgress(false);
-  };
-
   const handleTestSupabase = async () => {
     if (!supabaseUrl || !supabaseKey) {
       setSupabaseTestResult('Please provide both Supabase URL and API Key.');
@@ -386,6 +420,18 @@ const SettingsScreen: React.FC = () => {
       setSupabaseSyncResult(`Sync failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
     setSupabaseSyncInProgress(false);
+  };
+
+  const handlePullFromDatabase = async () => {
+    setSupabasePullInProgress(true);
+    setSupabasePullResult('');
+    try {
+      await pullFromDatabase();
+      setSupabasePullResult('✅ Successfully pulled latest data from database!');
+    } catch (error) {
+      setSupabasePullResult(`❌ Pull failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+    setSupabasePullInProgress(false);
   };
 
   return (
@@ -548,6 +594,72 @@ const SettingsScreen: React.FC = () => {
         </AccordionDetails>
       </Accordion>
 
+      {/* Products Section */}
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography variant="h6">Products</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Card>
+            <CardContent>
+              <List>
+                {state.products.map((product) => (
+                  <ListItem key={product.id}>
+                    <ListItemText
+                      primary={product.name}
+                      secondary={
+                        <Box>
+                          <Typography variant="body2" color="text.secondary">
+                            Categories: {product.categories.map(catId => {
+                              const category = state.categories.find(c => c.id === catId);
+                              return category?.name;
+                            }).filter(Boolean).join(', ') || 'None'}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Suppliers: {product.suppliers.map(suppId => {
+                              const supplier = state.suppliers.find(s => s.id === suppId);
+                              return supplier?.name;
+                            }).filter(Boolean).join(', ') || 'None'}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Quantity Tracking: {product.requiresQuantity ? 'Yes' : 'No'}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Available in {product.locations.filter(loc => loc.isAvailable).length} location(s)
+                          </Typography>
+                        </Box>
+                      }
+                    />
+                    <ListItemSecondaryAction>
+                      <IconButton
+                        edge="end"
+                        aria-label="edit"
+                        onClick={() => handleEditProduct(product)}
+                        sx={{ mr: 1 }}
+                      >
+                        <EditIcon />
+                      </IconButton>
+                      <IconButton
+                        edge="end"
+                        aria-label="delete"
+                        onClick={() => handleDeleteProduct(product)}
+                      >
+                        <DeleteIcon />
+                      </IconButton>
+                    </ListItemSecondaryAction>
+                  </ListItem>
+                ))}
+              </List>
+              {state.products.length === 0 && (
+                <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', py: 2 }}>
+                  No products yet. Add products during inventory sessions or use the "Add Product" button in the inventory screen.
+                </Typography>
+              )}
+            </CardContent>
+          </Card>
+        </AccordionDetails>
+      </Accordion>
+
       {/* Email Integration Section */}
       <Accordion>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -604,7 +716,9 @@ const SettingsScreen: React.FC = () => {
           <Card>
             <CardContent>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                Sync data with Supabase cloud database
+                Cloud database for real-time sync and data persistence. 
+                <strong>Pull from Database</strong> gets latest changes from database. 
+                <strong>Push & Sync</strong> uploads local changes then pulls updates.
               </Typography>
               
               {/* Auto-sync toggle */}
@@ -666,13 +780,22 @@ const SettingsScreen: React.FC = () => {
                   </Button>
                   <Button
                     variant="contained"
+                    color="primary"
+                    onClick={handlePullFromDatabase}
+                    disabled={supabasePullInProgress}
+                    size="small"
+                  >
+                    {supabasePullInProgress ? 'Pulling...' : 'Pull from Database'}
+                  </Button>
+                  <Button
+                    variant="contained"
                     color="success"
                     startIcon={<CloudSyncIcon />}
                     onClick={handleSyncWithSupabase}
                     disabled={supabaseSyncInProgress}
                     size="small"
                   >
-                    {supabaseSyncInProgress ? 'Syncing...' : 'Sync Now'}
+                    {supabaseSyncInProgress ? 'Syncing...' : 'Push & Sync'}
                   </Button>
                 </Box>
                 {supabaseTestResult && (
@@ -680,89 +803,14 @@ const SettingsScreen: React.FC = () => {
                     {supabaseTestResult}
                   </Alert>
                 )}
+                {supabasePullResult && (
+                  <Alert severity={supabasePullResult.includes('✅') ? 'success' : 'error'}>
+                    {supabasePullResult}
+                  </Alert>
+                )}
                 {supabaseSyncResult && (
                   <Alert severity={supabaseSyncResult.includes('successful') ? 'success' : 'error'}>
                     {supabaseSyncResult}
-                  </Alert>
-                )}
-              </Box>
-            </CardContent>
-          </Card>
-        </AccordionDetails>
-      </Accordion>
-
-      {/* Google Sheets Integration Section */}
-      <Accordion>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Typography variant="h6">Google Sheets Integration</Typography>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Card>
-            <CardContent>
-              <Typography variant="body2" color="text.secondary" gutterBottom>
-                Sync data with Google Sheets (requires service account credentials)
-              </Typography>
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <TextField
-                  label="Spreadsheet ID"
-                  value={sheetsSpreadsheetId}
-                  onChange={(e) => setSheetsSpreadsheetId(e.target.value)}
-                  fullWidth
-                  size="small"
-                />
-                <Button
-                  variant="outlined"
-                  component="label"
-                  size="small"
-                >
-                  Upload Credentials JSON
-                  <input
-                    type="file"
-                    accept=".json"
-                    onChange={(e) => setSheetsCredentials(e.target.files?.[0] || null)}
-                    hidden
-                  />
-                </Button>
-                {sheetsCredentials && (
-                  <Typography variant="body2" color="text.secondary">
-                    File selected: {sheetsCredentials.name}
-                  </Typography>
-                )}
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  <Button
-                    variant="outlined"
-                    onClick={handleTestGoogleSheets}
-                    disabled={sheetsTesting}
-                    size="small"
-                  >
-                    Test Connection
-                  </Button>
-                  <Button
-                    variant="contained"
-                    onClick={handleSaveGoogleSheetsSettings}
-                    size="small"
-                  >
-                    Save Settings
-                  </Button>
-                  <Button
-                    variant="contained"
-                    color="success"
-                    startIcon={<StorageIcon />}
-                    onClick={handleSyncWithGoogleSheets}
-                    disabled={syncInProgress}
-                    size="small"
-                  >
-                    {syncInProgress ? 'Syncing...' : 'Sync Now'}
-                  </Button>
-                </Box>
-                {sheetsTestResult && (
-                  <Alert severity={sheetsTestResult.includes('successful') ? 'success' : 'error'}>
-                    {sheetsTestResult}
-                  </Alert>
-                )}
-                {syncResult && (
-                  <Alert severity={syncResult.includes('successful') ? 'success' : 'error'}>
-                    {syncResult}
                   </Alert>
                 )}
               </Box>
@@ -961,6 +1009,13 @@ const SettingsScreen: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Edit Product Dialog */}
+      <EditProductDialog
+        open={showEditProductDialog}
+        onClose={handleCloseEditProductDialog}
+        product={editingProduct}
+      />
     </Box>
   );
 };

@@ -45,20 +45,29 @@ const ProductCard: React.FC<ProductCardProps> = ({
   const lastOrderInfo = getLastOrderInfo(product.id, location.id);
 
   // Auto-check order checkbox when quantity is below threshold
-  useEffect(() => {
-    if (product.requiresQuantity && quantity < minThreshold) {
-      setShouldOrder(true);
-    }
-  }, [quantity, minThreshold, product.requiresQuantity]);
-
-  // Update parent when values change
+  // Auto-uncheck when quantity goes above threshold
   useEffect(() => {
     if (product.requiresQuantity) {
-      onUpdate(product.id, quantity, shouldOrder);
-    } else {
-      onUpdate(product.id, undefined, shouldOrder);
+      if (quantity < minThreshold) {
+        setShouldOrder(true);
+      } else if (quantity >= minThreshold && shouldOrder) {
+        setShouldOrder(false);
+      }
     }
-  }, [quantity, shouldOrder, product.id, product.requiresQuantity]);
+  }, [quantity, minThreshold, product.requiresQuantity, shouldOrder]);
+
+  // Update parent when values change - but only if user has interacted or item already exists
+  useEffect(() => {
+    // Only update if there's already a currentItem (meaning user has interacted before)
+    // or if shouldOrder is true (meaning user wants to order it)
+    if (currentItem || shouldOrder) {
+      if (product.requiresQuantity) {
+        onUpdate(product.id, quantity, shouldOrder);
+      } else {
+        onUpdate(product.id, undefined, shouldOrder);
+      }
+    }
+  }, [quantity, shouldOrder, product.id, product.requiresQuantity, currentItem, onUpdate]);
 
   const handleQuantityChange = (newQuantity: number) => {
     const validQuantity = Math.max(0, newQuantity);
@@ -99,54 +108,59 @@ const ProductCard: React.FC<ProductCardProps> = ({
   return (
     <Card 
       sx={{ 
-        mb: 1.5, // Reduced from 2
+        mb: 0.75, // Further reduced from 1 for maximum compactness
         border: isLowStock ? '2px solid #f44336' : '1px solid #e0e0e0',
         backgroundColor: isLowStock ? '#ffebee' : 'white',
       }}
     >
-      <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}> {/* Reduced padding */}
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}> {/* Reduced mb from 2 to 1 */}
+      <CardContent sx={{ py: 0.75, px: 1.5, '&:last-child': { pb: 0.75 } }}> {/* Even more reduced padding */}
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 0.25 }}> {/* Further reduced mb */}
           <Box sx={{ flex: 1 }}>
-            <Typography variant="h6" component="h3" gutterBottom sx={{ mb: 0.5 }}> {/* Reduced margin bottom */}
+            <Typography variant="h6" component="h3" gutterBottom sx={{ mb: 0.25 }}> {/* Further reduced margin bottom */}
               {product.name}
             </Typography>
             
+            {/* Min Threshold - moved above suppliers */}
+            {product.requiresQuantity && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.25 }}> {/* Further reduced mb */}
+                Min Threshold: {minThreshold}
+              </Typography>
+            )}
+
+            {/* Suppliers */}
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.25 }}> {/* Further reduced mb */}
+              Suppliers: {getProductSuppliers().map(s => s?.name).join(', ')}
+            </Typography>
+
             {/* Categories */}
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.25, mb: 0.25 }}> {/* Reduced gaps and margins */}
               {getProductCategories().map((category) => (
                 <Chip
                   key={category?.id}
                   label={category?.name}
                   size="small"
+                  sx={{ 
+                    height: 20, // Smaller chips
+                    fontSize: '0.7rem', // Smaller text
+                  }}
                   style={{ backgroundColor: category?.color }}
                 />
               ))}
             </Box>
 
-            {/* Suppliers */}
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
-              Suppliers: {getProductSuppliers().map(s => s?.name).join(', ')}
-            </Typography>
-
-            {product.requiresQuantity && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}> {/* Reduced mb from 1 to 0.5 */}
-                Min Threshold: {minThreshold}
-              </Typography>
-            )}
-
             {/* Last Order Information */}
             {lastOrderInfo && (
               <Box sx={{ 
                 backgroundColor: '#f5f5f5', 
-                padding: 0.5, // Reduced from 1
+                padding: 0.25, // Further reduced padding
                 borderRadius: 1, 
-                mb: 0, // Reduced from 1
+                mb: 0,
                 border: '1px solid #e0e0e0'
               }}>
-                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold', fontSize: '0.75rem' }}> {/* Smaller font */}
+                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold', fontSize: '0.65rem' }}> {/* Even smaller font */}
                   Last Order:
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.75rem' }}> {/* Smaller font */}
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.65rem' }}> {/* Even smaller font */}
                   {formatLastOrderDate(lastOrderInfo.date)}
                   {lastOrderInfo.quantity && ` • Qty: ${lastOrderInfo.quantity}`}
                 </Typography>
@@ -155,15 +169,29 @@ const ProductCard: React.FC<ProductCardProps> = ({
           </Box>
 
           {/* Right side controls */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5, ml: 2 }}> {/* Reduced gap from 1 to 0.5 */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.25, ml: 1.5 }}> {/* Reduced left margin */}
             {/* Quantity controls */}
             {product.requiresQuantity && (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}> {/* Reduced gap from 1 to 0.5 */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}> {/* Further reduced gap */}
                 <IconButton 
                   onClick={() => handleQuantityChange(quantity - 1)}
                   disabled={quantity <= 0}
                   size="small"
-                  sx={{ p: 0.5 }} // Reduced padding
+                  sx={{ 
+                    p: 0, // Remove padding to match TextField height
+                    backgroundColor: '#f44336',
+                    color: 'white',
+                    borderRadius: 1, // More rectangular/square shape
+                    '&:hover': {
+                      backgroundColor: '#d32f2f',
+                    },
+                    '&:disabled': {
+                      backgroundColor: '#ffcdd2',
+                      color: '#ffffff80',
+                    },
+                    width: 50, // Match TextField width
+                    height: 40, // Match TextField height (small size)
+                  }}
                 >
                   <RemoveIcon fontSize="small" />
                 </IconButton>
@@ -176,16 +204,26 @@ const ProductCard: React.FC<ProductCardProps> = ({
                   }}
                   inputProps={{
                     min: 0,
-                    style: { textAlign: 'center' },
+                    style: { textAlign: 'center', fontSize: '0.9rem' }, // Even smaller font
                   }}
-                  sx={{ width: 70 }} // Reduced from 80
+                  sx={{ width: 50 }} // Further reduced width
                   size="small"
                 />
                 
                 <IconButton 
                   onClick={() => handleQuantityChange(quantity + 1)}
                   size="small"
-                  sx={{ p: 0.5 }} // Reduced padding
+                  sx={{ 
+                    p: 0, // Remove padding to match TextField height
+                    backgroundColor: '#4caf50',
+                    color: 'white',
+                    borderRadius: 1, // More rectangular/square shape
+                    '&:hover': {
+                      backgroundColor: '#388e3c',
+                    },
+                    width: 50, // Match TextField width
+                    height: 40, // Match TextField height (small size)
+                  }}
                 >
                   <AddIcon fontSize="small" />
                 </IconButton>
@@ -207,22 +245,6 @@ const ProductCard: React.FC<ProductCardProps> = ({
             />
           </Box>
         </Box>
-
-        {isLowStock && (
-          <Typography 
-            variant="caption" 
-            color="error" 
-            sx={{ 
-              display: 'block', 
-              mt: 0.5, // Reduced from 1
-              fontWeight: 'bold',
-              textAlign: 'center',
-              fontSize: '0.7rem' // Smaller font
-            }}
-          >
-            ⚠️ Below minimum threshold - auto-selected for ordering
-          </Typography>
-        )}
       </CardContent>
     </Card>
   );
