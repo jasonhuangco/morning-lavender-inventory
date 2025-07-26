@@ -43,6 +43,9 @@ const ProductCard: React.FC<ProductCardProps> = ({
 
   // Get last order information
   const lastOrderInfo = getLastOrderInfo(product.id, location.id);
+  
+  // Debug: Log the last order info
+  console.log(`Product ${product.name} (ID: ${product.id}) at location ${location.id}:`, lastOrderInfo);
 
   // Auto-check order checkbox when quantity is below threshold
   // Auto-uncheck when quantity goes above threshold
@@ -127,6 +130,18 @@ const ProductCard: React.FC<ProductCardProps> = ({
               </Typography>
             )}
 
+            {/* Last Order Information - moved up for prominence */}
+            {lastOrderInfo ? (
+              <Typography variant="body2" sx={{ mb: 0.25, color: '#1976d2', fontWeight: 'medium' }}>
+                Last Ordered: {formatLastOrderDate(lastOrderInfo.date)}
+                {lastOrderInfo.quantity && ` (Qty: ${lastOrderInfo.quantity})`}
+              </Typography>
+            ) : (
+              <Typography variant="body2" sx={{ mb: 0.25, color: '#757575', fontStyle: 'italic' }}>
+                No recent orders (last 12 months)
+              </Typography>
+            )}
+
             {/* Suppliers */}
             <Typography variant="body2" color="text.secondary" sx={{ mb: 0.25 }}> {/* Further reduced mb */}
               Suppliers: {getProductSuppliers().map(s => s?.name).join(', ')}
@@ -147,25 +162,6 @@ const ProductCard: React.FC<ProductCardProps> = ({
                 />
               ))}
             </Box>
-
-            {/* Last Order Information */}
-            {lastOrderInfo && (
-              <Box sx={{ 
-                backgroundColor: '#f5f5f5', 
-                padding: 0.25, // Further reduced padding
-                borderRadius: 1, 
-                mb: 0,
-                border: '1px solid #e0e0e0'
-              }}>
-                <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 'bold', fontSize: '0.65rem' }}> {/* Even smaller font */}
-                  Last Order:
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.65rem' }}> {/* Even smaller font */}
-                  {formatLastOrderDate(lastOrderInfo.date)}
-                  {lastOrderInfo.quantity && ` • Qty: ${lastOrderInfo.quantity}`}
-                </Typography>
-              </Box>
-            )}
           </Box>
 
           {/* Right side controls */}
